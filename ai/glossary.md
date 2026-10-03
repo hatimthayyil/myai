@@ -11,3 +11,15 @@
 - `forget`: drop a summary and everything built on it; `nap` rebuilds them. Never touches the log.
 - `recall`: case-insensitive regex search over every raw memory, newest matches kept within `PART_CHARS`.
 - `knob`: a per-memory size in `config`: `WAKE_LINES`, `ENTRY_CHARS`, `PART_CHARS`, `PART_LINES`.
+
+## Keywords
+
+Denote filename keywords (`__a_b`). Lowercase, one word each.
+
+- `memory`: `ai memory` and agent memory generally.
+- `storage`: where and how data is persisted.
+- `git`: git objects, refs, notes, worktrees.
+- `db`: databases.
+- `provenance`: who/what/when produced an item.
+- `attribution`: AI vs human authorship of work.
+- `platform`: the wider `ai` tool: agents, orchestration, workspaces.
