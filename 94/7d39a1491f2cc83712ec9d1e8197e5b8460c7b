@@ -1,0 +1,24 @@
+.gitignore
+  h_3b956d4cad68d1 1-10
+AGENTS.md
+  h_3b956d4cad68d1 1-19
+devenv.lock
+  h_3b956d4cad68d1 1-86
+devenv.nix
+  h_3b956d4cad68d1 1-60
+devenv.yaml
+  h_3b956d4cad68d1 1-9
+my/glossary.md
+  h_3b956d4cad68d1 1-4
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "947d39a1491f2cc83712ec9d1e8197e5b8460c7b",
+  "prompts": {},
+  "humans": {
+    "h_3b956d4cad68d1": {
+      "author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
