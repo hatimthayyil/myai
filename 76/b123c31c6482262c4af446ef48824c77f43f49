@@ -1,0 +1,19 @@
+ai/research/memory-git-ref.md
+  s_3eef8379439ce5::t_2abf909b06090c 1-381
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "76b123c31c6482262c4af446ef48824c77f43f49",
+  "prompts": {},
+  "sessions": {
+    "s_3eef8379439ce5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d3810a82-0cc3-486d-bbf6-65da56478caf",
+        "model": "unknown"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
