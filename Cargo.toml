@@ -1,0 +1,33 @@
+[workspace]
+members = ["ai/src/rs/*"]
+default-members = [".", "ai/src/rs/*"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+ai = { path = "ai/src/rs/ai" }
+ai-memory = { path = "ai/src/rs/memory" }
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+jiff = "0.2.37"
+regex = "1.13.1"
+tempfile = "3.27.0"
+
+[package]
+name = "myai"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "ai"
+path = "src/main.rs"
+
+[dependencies]
+ai.workspace = true
+clap.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

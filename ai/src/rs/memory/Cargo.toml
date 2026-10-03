@@ -1,0 +1,13 @@
+[package]
+name = "ai-memory"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+jiff.workspace = true
+regex.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
