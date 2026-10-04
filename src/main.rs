@@ -3,7 +3,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "ai", about = "All-in-one AI tool.")]
+#[command(name = "ai", version, about = "All-in-one AI tool.")]
 struct Cli {
     #[command(subcommand)]
     command: Command,

@@ -1,8 +1,10 @@
-use std::{fs, path::Path};
-
 use anyhow::{Result, bail};
+use gix::bstr::ByteSlice;
 
-use crate::store::{AtPath, LOG_REC, ME, TREE_REC, pretty};
+use crate::record::TEXT_MAX;
+
+pub const SECTION: &str = "ai";
+pub const SUBSECTION: &str = "memory";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Knob {
@@ -26,6 +28,15 @@ impl Knob {
             Knob::EntryChars => "ENTRY_CHARS",
             Knob::PartChars => "PART_CHARS",
             Knob::PartLines => "PART_LINES",
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Knob::WakeLines => "wakeLines",
+            Knob::EntryChars => "entryChars",
+            Knob::PartChars => "partChars",
+            Knob::PartLines => "partLines",
         }
     }
 
@@ -55,19 +66,13 @@ impl Knob {
         Knob::ALL.map(Knob::name).join(", ")
     }
 
-    pub fn validate(self, v: &str, place: &str) -> Result<u64> {
+    pub fn validate(self, v: &str, label: &str) -> Result<u64> {
         let n = match v.parse::<u64>() {
             Ok(n) if n >= 1 && v.bytes().all(|b| b.is_ascii_digit()) => n,
-            _ => bail!(
-                "{place}{} must be a positive whole number, not '{v}'.",
-                self.name()
-            ),
+            _ => bail!("{label} must be a positive whole number, not '{v}'."),
         };
-        let top = (TREE_REC - 8).min(LOG_REC - 40);
-        if self == Knob::EntryChars && n > top {
-            bail!(
-                "{place}ENTRY_CHARS is at most {top}: a memory has to fit the fixed-width records."
-            );
+        if self == Knob::EntryChars && n > TEXT_MAX {
+            bail!("{label} is at most {TEXT_MAX}: a memory has to fit the fixed-width records.");
         }
         Ok(n)
     }
@@ -90,49 +95,36 @@ impl Config {
         self.0[k as usize] = v;
     }
 
-    pub fn load(dir: &Path) -> Result<Config> {
-        let p = dir.join("config");
+    /// Reads `ai.memory.<knob>` from `file`; `place` names where it is written.
+    pub fn load(file: &gix::config::File, place: &str) -> Result<Config> {
         let mut cfg = Config::default();
-        if !p.exists() {
-            return Ok(cfg);
-        }
-        for (n, line) in fs::read_to_string(&p).at(&p)?.lines().enumerate() {
-            let line = line.split('#').next().unwrap_or("").trim();
-            let Some((k, v)) = line.split_once('=') else {
-                continue;
-            };
-            let (k, v) = (k.trim().to_uppercase(), v.trim());
-            let place = format!("{} line {}: ", pretty(&p), n + 1);
-            let Some(knob) = Knob::parse(&k) else {
-                bail!(
-                    "{place}{k} is not a size. Delete the line, or name one of: {}.",
-                    Knob::names()
-                );
-            };
-            cfg.set(knob, Some(knob.validate(v, &place)?));
+        for k in Knob::ALL {
+            if let Some(v) = file.string_by(SECTION, Some(SUBSECTION.into()), k.key()) {
+                let label = format!("{place}: {SECTION}.{SUBSECTION}.{}", k.key());
+                cfg.set(k, Some(k.validate(v.to_str_lossy().trim(), &label)?));
+            }
         }
         Ok(cfg)
     }
 
-    pub fn write(&self, dir: &Path) -> Result<()> {
-        let mut out = format!(
-            "# Sizes for this memory. A commented line means: follow the\n\
-             # tool's default. Edit with `{ME} config NAME=VALUE`.\n\n"
-        );
+    pub fn save(&self, file: &mut gix::config::File) -> Result<()> {
         for k in Knob::ALL {
-            let mark = if self.overridden(k).is_some() {
-                ""
-            } else {
-                "# "
-            };
-            out += &format!(
-                "{mark:<2}{:<12} = {:<6} # {}\n",
-                k.name(),
-                self.get(k),
-                k.what()
-            );
+            match self.overridden(k) {
+                Some(v) => {
+                    file.set_raw_value_by(
+                        SECTION,
+                        Some(SUBSECTION.into()),
+                        k.key(),
+                        v.to_string().as_str(),
+                    )?;
+                }
+                None => {
+                    if let Ok(mut s) = file.section_mut(SECTION, Some(SUBSECTION.into())) {
+                        while s.remove(k.key()).is_some() {}
+                    }
+                }
+            }
         }
-        let p = dir.join("config");
-        fs::write(&p, out).at(&p)
+        Ok(())
     }
 }

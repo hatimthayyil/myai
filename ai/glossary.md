@@ -1,15 +1,26 @@
 # Glossary
 
-- `memory`: the store `ai memory` manages; one identity, append-only. Default `<repo root>/.ai/memory`, override `AI_MEMORY_DIR`. Also: one recorded line in it.
-- `record`: fixed-width slot on disk. Log record = 320 bytes, tree record = 288; text padded with spaces, ends in `\n`. Position is identity.
-- `block`: aligned power-of-two range of memories `[lo, hi)`, printed inclusive as `lo-(hi-1)`. Blocks of size ≥ 2 hold a one-line summary in `TREE/<size>`.
+- `memory`: the store `ai memory` manages; one per user per machine, shared by every repo and session, append-only. A bare git repo at `~/.ai/memory` (override `AI_MEMORY_DIR`); all data lives as objects under `refs/ai/memory`, one commit per mutation. Also: one recorded line in it.
+- `record`: fixed-width 512-byte slot. Log record = `ts origin repo head branch agent model session text`, tree record = `ts origin fp agent model session text`; fields space-padded, ends in `\n`. Positions are not stored.
+- `segment`: one blob of up to 256 records, at `log/<hi>/<lo>` or `tree/<size>/<hi>/<lo>`.
+- `key`: `(ts, origin)` of a memory; unique, and the log is strictly sorted by it. `ts` is UTC `YYYYMMDDThhmmssZ`.
+- `origin`: 6 Crockford base32 chars, random per memory clone, in `ai.memory.origin`.
+- `position`: index of a memory in the log (`#<pos>`); display and navigation only.
+- `id`: what a line prints first: `#<pos>` or `#<lo-hi>`; `zoom`, `show` and `grep --before` take it, `#` optional.
+- `fingerprint` (`fp`): first 64 bits of SHA-256 over a block's member keys; stored in its summary.
+- `snapshot`: the memory as of one commit; every command reads one.
+- `block`: aligned power-of-two range of memories `[lo, hi)`, printed inclusive as `lo-(hi-1)`. Blocks of size ≥ 2 hold a one-line summary at `tree/<size>`.
 - `cover`: the set of blocks `wake` prints: tiles `[0, T)`, at most `WAKE_LINES` blocks, finer toward the present.
 - `wake`: print the cover, paged into parts. Refuses while a needed summary is missing.
 - `part`: one page of `wake` output, bounded by `PART_LINES`/`PART_CHARS`.
-- `nap`: build the next pending summary; blocks are built in order, smallest first.
-- `zoom`: open one block into its two halves.
+- `nap`: build the next pending summary; blocks are built in order, smallest first. Prompts carry `@<fp4>`; `nap` refuses a block whose members a sync changed.
+- `zoom`: open one block `--depth` levels down (default 3, 1–6), printing only that frontier; blocks ≤ 16 and nodes ≤ 2 open raw. Capped at 64 lines and `PART_CHARS`.
+- `show`: print every field of one memory (`show <pos>`) or summary (`show <lo-hi>`).
 - `forget`: drop a summary and everything built on it; `nap` rebuilds them. Never touches the log.
-- `recall`: case-insensitive regex search over every raw memory, newest matches kept within `PART_CHARS`.
-- `knob`: a per-memory size in `config`: `WAKE_LINES`, `ENTRY_CHARS`, `PART_CHARS`, `PART_LINES`.
+- `grep`: rg-style regex search over every memory's text (smart-case, `-F`, provenance filters; `-t` adds summaries), chronological, newest page first; `--before <id>` pages back.
+- `remote`: the memory repo's own git remote: `ai.memory.remote`, default `origin` if it exists. None = local only.
+- `tracking ref`: `refs/ai/remotes/<remote>/memory`, the remote's memory as last fetched.
+- `sync`: fetch, merge, push with the remote (`ai memory sync`; best-effort with a 3 s budget at `wake`). Merge = sorted union of logs; summaries kept where their fp matches, at any offset (LWW on clash); the rest become pending.
+- `knob`: a per-machine size in the memory repo's git config (`ai.memory.wakeLines` …), set with `ai memory config NAME=VALUE`: `WAKE_LINES`, `ENTRY_CHARS`, `PART_CHARS`, `PART_LINES`.
 - `provenance`: origin of a data item: who/what produced it, when, from which session, model and commit.
 - `attribution`: authorship of work (code, files) as AI-generated, AI-assisted or human.

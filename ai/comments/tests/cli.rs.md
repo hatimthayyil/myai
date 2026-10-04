@@ -1,0 +1,5 @@
+# tests/cli.rs
+
+Binary tests. `Sandbox` isolates every run: `HOME`/`XDG_CONFIG_HOME` in the temp dir, `GIT_CONFIG_NOSYSTEM`, and the agent/git identity env removed, so results do not depend on the developer's machine (Claude Code itself sets `AI_AGENT`, `CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`). Test git runs disable auto-maintenance: git ≥2.5x forks it after `commit`, and its `maintenance.lock` would race the "nothing written outside the store" listing.
+
+Sync tests use local bare repos as remotes and clones made by separate `init`s (distinct origins, unrelated histories). Interleaving uses `import` with alternating dates, since keys come from timestamps. The push race is staged by a `pre-receive` hook that moves the remote ref once (outside the quarantine env), so the first push loses its CAS. The slow-remote test fakes ssh with `GIT_SSH_COMMAND="sh -c 'sleep 10'"`. `levels` checks every summary's fp against its members and the half-the-level-below cap. Provenance filters (`grep --repo/--agent/--session/--origin`) and `show` run in the binary tests, since only they can set the env and cwd a note reads.

@@ -4,7 +4,7 @@ default-members = [".", "ai/src/rs/*"]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 [workspace.dependencies]
@@ -12,8 +12,11 @@ ai = { path = "ai/src/rs/ai" }
 ai-memory = { path = "ai/src/rs/memory" }
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
+getrandom = "0.4.3"
+gix = { version = "0.88.0", default-features = false, features = ["anyhow", "sha1"] }
 jiff = "0.2.37"
 regex = "1.13.1"
+sha2 = "0.11.0"
 tempfile = "3.27.0"
 
 [package]
@@ -31,3 +34,6 @@ clap.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[profile.dev.package."*"]
+opt-level = 3
