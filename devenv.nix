@@ -7,6 +7,8 @@
 }:
 
 {
+  outputs.ai = config.languages.rust.import ./. { };
+
   # https://devenv.sh/basics/
   # env.GREET = "devenv";
 
@@ -48,10 +50,12 @@
   # };
 
   # https://devenv.sh/tests/
-  # enterTest = ''
-  #   echo "Running tests"
-  #   git --version | grep --color=auto "${pkgs.git.version}"
-  # '';
+  enterTest = ''
+    cargo test
+    for manifest in ai/src/rs/*/Cargo.toml; do
+      CARGO_TARGET_DIR="$DEVENV_ROOT/target" cargo test --manifest-path "$manifest"
+    done
+  '';
 
   # https://devenv.sh/git-hooks/
   # git-hooks.hooks.shellcheck.enable = true;

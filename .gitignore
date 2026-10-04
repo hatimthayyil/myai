@@ -11,6 +11,7 @@ devenv.local.yaml
 
 # Rust
 /target
+/ai/src/rs/*/Cargo.lock
 
 # ai memory
 /.ai/memory/

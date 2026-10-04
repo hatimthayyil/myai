@@ -1,16 +1,19 @@
 [package]
 name = "ai-memory"
-version.workspace = true
-edition.workspace = true
+version = "0.2.0"
+edition = "2024"
 
 [dependencies]
-anyhow.workspace = true
-clap.workspace = true
-getrandom.workspace = true
-gix.workspace = true
-jiff.workspace = true
-regex.workspace = true
-sha2.workspace = true
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+getrandom = "0.4.3"
+gix = { version = "0.88.0", default-features = false, features = ["anyhow", "sha1"] }
+jiff = "0.2.37"
+regex = "1.13.1"
+sha2 = "0.11.0"
 
 [dev-dependencies]
-tempfile.workspace = true
+tempfile = "3.27.0"
+
+[profile.dev.package."*"]
+opt-level = 3

@@ -29,7 +29,6 @@ dependencies = [
  "jiff",
  "regex",
  "sha2",
- "tempfile",
 ]
 
 [[package]]
