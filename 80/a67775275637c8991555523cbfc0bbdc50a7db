@@ -1,0 +1,48 @@
+ai/comments/devenv.nix.md
+  s_fc4879e4bdd6c0::t_ca7433a8f7e900 1-4
+ai/src/rs/memory/Cargo.toml
+  s_fc4879e4bdd6c0::t_4a5b15693ce373 17-19
+  s_fc4879e4bdd6c0::t_3f5dc22f10dc85 3-4,7-13,16
+ai/comments/ai/src/rs/memory/Cargo.toml.md
+  s_fc4879e4bdd6c0::t_ca7433a8f7e900 1-4
+Cargo.toml
+  s_fc4879e4bdd6c0::t_3f5dc22f10dc85 3-4,11-12,15
+devenv.nix
+  s_fc4879e4bdd6c0::t_296e6e46bddfcd 10
+  s_f0f20da75b3d84::t_b8a3f49a8193d4 11
+  s_fc4879e4bdd6c0::t_7fdfbe4a0aa28b 53-58
+ai/src/rs/ai/Cargo.toml
+  s_fc4879e4bdd6c0::t_3f5dc22f10dc85 3-4,7
+.gitignore
+  s_fc4879e4bdd6c0::t_d27f7cfad58ac4 14
+ai/comments/Cargo.toml.md
+  s_fc4879e4bdd6c0::t_ca7433a8f7e900 3
+devenv.lock
+  s_fc4879e4bdd6c0::t_994d662df45586 3-54,72,74-77,80-144,146-147,152-229,250-294,297,299
+devenv.yaml
+  s_fc4879e4bdd6c0::t_693779f0cdfe4e 3-7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "80a67775275637c8991555523cbfc0bbdc50a7db",
+  "prompts": {},
+  "sessions": {
+    "s_f0f20da75b3d84": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8a20eea9-8826-4b30-b6e7-80beb9cb5ac6",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    },
+    "s_fc4879e4bdd6c0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e5568269-c787-47ff-aebe-059303d61a47",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
