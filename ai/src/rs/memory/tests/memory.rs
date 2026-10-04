@@ -1,22 +1,24 @@
 use std::{
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
     process::ExitCode,
-    sync::LazyLock,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     thread,
+    time::Duration,
 };
 
 use ai_memory::{
-    Changes, Cli, Knob, LOG, REC, Store, Summary, level, pending, pending_count, seg_path,
+    Backend, Block, Cli, Compactor, Conversation, Coord, Kind, Mem, Message, NODE, Options,
+    PLACEHOLDER, Runtime, Store, VIEW, zoom,
 };
+use anyhow::{Result, bail};
 use clap::Parser;
 use regex::Regex;
-use sha2::Digest;
 use tempfile::TempDir;
-
-const N: u64 = 2000;
-const CAP_CHARS: usize = 30000;
-const CAP_LINES: usize = 2000;
 
 struct Out {
     code: u8,
@@ -24,7 +26,19 @@ struct Out {
     stderr: String,
 }
 
-fn run(dir: &Path, args: &[&str]) -> Out {
+fn runtime(backend: Arc<dyn Backend>) -> Runtime {
+    Runtime {
+        backend: Box::new(move || Ok(backend.clone())),
+        opts: Options {
+            retry: Duration::from_millis(20),
+            ..Options::default()
+        },
+        nap_on_note: false,
+        before_release: Box::new(|| {}),
+    }
+}
+
+fn run_rt(dir: &Path, rt: &Runtime, args: &[&str]) -> Out {
     let cli = match Cli::try_parse_from(std::iter::once("memory").chain(args.iter().copied())) {
         Ok(cli) => cli,
         Err(e) => {
@@ -36,7 +50,7 @@ fn run(dir: &Path, args: &[&str]) -> Out {
         }
     };
     let mut buf = Vec::new();
-    let result = cli.run(dir, &mut buf);
+    let result = cli.run_with(dir, &mut buf, rt);
     let stdout = String::from_utf8(buf).unwrap();
     match result {
         Ok(c) => Out {
@@ -47,39 +61,17 @@ fn run(dir: &Path, args: &[&str]) -> Out {
         Err(e) => Out {
             code: 1,
             stdout,
-            stderr: e.to_string(),
+            stderr: format!("{e:#}"),
         },
     }
 }
 
-fn nap_id(out: &str) -> Option<String> {
-    static RE: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"ai memory nap (\d+)-(\d+)").unwrap());
-    RE.captures(out).map(|c| format!("{}-{}", &c[1], &c[2]))
-}
-
-fn offered(out: &str) -> Vec<&str> {
-    out.lines()
-        .filter(|l| l.contains("ai memory nap ") || l.contains("ai memory wake "))
-        .collect()
-}
-
-fn complete(t: u64) -> Vec<(u64, u64)> {
-    let (mut out, mut size) = (Vec::new(), 2);
-    while size <= t {
-        out.extend((0..t / size).map(|i| (i * size, (i + 1) * size)));
-        size *= 2;
-    }
-    out
-}
-
-fn settle(dir: &Path, text: &str) -> usize {
-    let mut n = 0;
-    while let Some(id) = nap_id(&run(dir, &["nap"]).stdout) {
-        assert_eq!(run(dir, &["nap", &id, text]).code, 0, "nap {id} rejected");
-        n += 1;
-    }
-    n
+fn run(dir: &Path, args: &[&str]) -> Out {
+    run_rt(
+        dir,
+        &runtime(Arc::new(Model(Arc::new(Fake::summaries())))),
+        args,
+    )
 }
 
 fn store() -> (TempDir, PathBuf) {
@@ -89,915 +81,680 @@ fn store() -> (TempDir, PathBuf) {
     (tmp, d)
 }
 
-fn log_len(d: &Path) -> u64 {
-    Store::open(d)
+fn msg(kind: Kind, text: impl Into<String>) -> Message {
+    Message::new(kind, &text.into())
+}
+
+fn long(i: u64) -> String {
+    format!("message {i} {}", "x".repeat(600))
+}
+
+/// A model that answers each call with `reply(step block, attempt)`.
+type Reply = dyn Fn(&str, usize) -> Result<String> + Send + Sync;
+
+struct Fake {
+    reply: Box<Reply>,
+    calls: AtomicUsize,
+    says: AtomicUsize,
+    running: AtomicUsize,
+    peak: AtomicUsize,
+    log: Mutex<Vec<String>>,
+}
+
+impl Fake {
+    fn new(reply: impl Fn(&str, usize) -> Result<String> + Send + Sync + 'static) -> Fake {
+        Fake {
+            reply: Box::new(reply),
+            calls: AtomicUsize::new(0),
+            says: AtomicUsize::new(0),
+            running: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
+            log: Mutex::default(),
+        }
+    }
+
+    /// A deterministic summary of 300 bytes naming what it summarized: two never merge free.
+    fn summaries() -> Fake {
+        Fake::new(|step, _| Ok(format!("{:.<300}", tag(step))))
+    }
+}
+
+/// What a step summarizes: `m<i>` for message i, `join` otherwise.
+fn tag(step: &str) -> String {
+    let re = Regex::new(r"\n\w+: message (\d+) ").unwrap();
+    match re.captures(step) {
+        Some(c) if step.contains("Compress this message") => format!("m{}", &c[1]),
+        _ => "join".into(),
+    }
+}
+
+struct FakeConv {
+    fake: Arc<Fake>,
+    step: String,
+    attempt: usize,
+}
+
+struct Model(Arc<Fake>);
+
+impl Backend for Model {
+    fn model(&self) -> &str {
+        "fake"
+    }
+
+    fn open(&self, system: &str) -> Result<Box<dyn Conversation>> {
+        assert!(system.starts_with("You write the memory of MyAI"));
+        self.0.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(Box::new(FakeConv {
+            fake: self.0.clone(),
+            step: String::new(),
+            attempt: 0,
+        }))
+    }
+}
+
+impl Conversation for FakeConv {
+    fn say(&mut self, message: &[Block]) -> Result<String> {
+        let f = &self.fake;
+        f.says.fetch_add(1, Ordering::SeqCst);
+        if self.attempt == 0 {
+            let (step, chat) = message.split_last().unwrap();
+            assert!(!step.cache && chat.iter().all(|b| b.cache));
+            let chat: String = chat.iter().map(|b| b.text.as_str()).collect();
+            assert!(chat.starts_with("<chat>\n") && chat.ends_with("</chat>"));
+            let ids = Regex::new(r"(?m)^\d+\+\d+\|").unwrap();
+            assert!(
+                !ids.is_match(&chat) && !chat.contains(PLACEHOLDER),
+                "{chat}"
+            );
+            self.step = step.text.clone();
+            f.log.lock().unwrap().push(tag(&self.step));
+        } else {
+            assert_eq!(message.len(), 1);
+            assert!(message[0].text.ends_with("| ← LIMIT"));
+        }
+        self.attempt += 1;
+        let now = f.running.fetch_add(1, Ordering::SeqCst) + 1;
+        f.peak.fetch_max(now, Ordering::SeqCst);
+        thread::sleep(Duration::from_millis(2));
+        f.running.fetch_sub(1, Ordering::SeqCst);
+        (f.reply)(&self.step, self.attempt)
+    }
+}
+
+fn compactor<'s>(s: &'s Store, fake: &Arc<Fake>, opts: Options) -> Compactor<'s> {
+    Compactor::new(s, Arc::new(Model(fake.clone())), opts)
         .unwrap()
-        .snapshot()
-        .unwrap()
-        .log_len()
-        .unwrap()
+        .expect("the lock is free")
 }
 
-fn built(d: &Path) -> u64 {
-    let s = Store::open(d).unwrap();
-    let snap = s.snapshot().unwrap();
-    let t = snap.log_len().unwrap();
-    (1..64)
-        .map(|k| 1 << k)
-        .take_while(|&size| size <= t)
-        .map(|size| snap.level_len(size).unwrap())
-        .sum()
+fn opts(budget: u64, jobs: usize) -> Options {
+    Options {
+        jobs,
+        retry: Duration::from_millis(20),
+        budget,
+    }
 }
 
-fn log_bytes(d: &Path) -> Vec<u8> {
-    let s = Store::open(d).unwrap();
-    let snap = s.snapshot().unwrap();
-    (0..8)
-        .flat_map(|k| snap.read(&seg_path(LOG, k)).unwrap().to_vec())
-        .collect()
+/// Every view part in order: tiles `[0, t)`.
+fn check_tiles(m: &Mem) {
+    let mut at = 0;
+    for c in m.view() {
+        assert_eq!(c.id(), at, "gap or overlap at {at}");
+        at = c.end();
+    }
+    assert_eq!(at, m.t());
 }
 
-fn state(d: &Path) -> (Option<String>, Vec<u8>) {
-    let s = Store::open(d).unwrap();
-    let head = s.snapshot().unwrap().commit().map(|c| c.to_string());
-    (head, fs::read(d.join("config")).unwrap())
-}
-
-fn rewrite(d: &Path, path: &str, edit: impl Fn(&mut Vec<u8>)) {
-    let s = Store::open(d).unwrap();
-    s.mutate("test", |snap| {
-        let mut b = snap.read(path)?.to_vec();
-        edit(&mut b);
-        let mut ch = Changes::default();
-        ch.put(path.into(), b);
-        Ok(((), ch))
+fn mergeable(m: &Mem) -> bool {
+    m.view().windows(2).any(|w| {
+        let (a, b) = (w[0], w[1]);
+        a.l == b.l && a.i % 2 == 0 && b.i == a.i + 1 && m.built(a.parent())
     })
-    .unwrap();
-}
-
-fn ids(d: &Path, args: &[&str]) -> Vec<(u64, u64)> {
-    let r = run(d, &[&["zoom"], args].concat());
-    assert_eq!(r.code, 0, "zoom {args:?} failed: {}", r.stderr);
-    let re = Regex::new(r"^#(\d+)(?:-(\d+))? ").unwrap();
-    r.stdout
-        .lines()
-        .map(|l| {
-            let c = re
-                .captures(l)
-                .unwrap_or_else(|| panic!("zoom printed a line with no id: {l:?}"));
-            let a: u64 = c[1].parse().unwrap();
-            (
-                a,
-                c.get(2)
-                    .map_or(a + 1, |m| m.as_str().parse::<u64>().unwrap() + 1),
-            )
-        })
-        .collect()
 }
 
 #[test]
-fn a_synthetic_life() {
+fn the_view_folds_incrementally() {
+    let mut m = Mem::new(6000);
+    let mut seed = 12345u64;
+    let mut rand = || {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        seed >> 33
+    };
+    let mut prev = BTreeSet::new();
+    let mut merges = 0;
+    for i in 0..1200u64 {
+        m.add_message();
+        let short = rand() % 10 < 3;
+        loop {
+            let due = m.due(|_| false, usize::MAX);
+            if due.is_empty() {
+                break;
+            }
+            for c in due {
+                let n = if c.l == 0 && short {
+                    40
+                } else {
+                    150 + (rand() % 60) as usize
+                };
+                m.add_node(c, "y".repeat(n));
+            }
+        }
+        check_tiles(&m);
+        assert!(m.all_built(), "after {i}");
+        let size: u64 = m
+            .view()
+            .iter()
+            .map(|&c| m.text(c).unwrap().len() as u64)
+            .sum();
+        assert_eq!(size, m.size());
+        assert!(
+            size <= m.budget() || !mergeable(&m),
+            "over budget with a mergeable pair"
+        );
+        let bounds: BTreeSet<u64> = m.view().iter().map(|c| c.id()).collect();
+        let split = bounds.iter().any(|b| *b < i && !prev.contains(b));
+        assert!(!split, "a part was split after message {i}");
+        if bounds.len() < prev.len() + 1 {
+            merges += 1;
+        }
+        prev = bounds;
+        if i % 100 == 99 {
+            let mut copy = m.clone();
+            copy.refold();
+            assert_eq!(copy.view(), m.view(), "refold differs after {i}");
+        }
+    }
+    assert!(merges > 100, "{merges} merges");
+    assert!(m.view().len() < 80, "{} lines", m.view().len());
+    assert!(
+        m.size() > 6000 - 400,
+        "the view stays near its budget: {}",
+        m.size()
+    );
+}
+
+#[test]
+fn rule_three_orders_the_work() {
+    let mut m = Mem::new(VIEW);
+    for _ in 0..6 {
+        m.add_message();
+    }
+    assert_eq!(m.first(), 0);
+    assert_eq!(m.due(|_| false, 10), [Coord::leaf(0)]);
+    m.add_node(Coord::leaf(0), "a".into());
+    m.add_node(Coord::leaf(1), "b".into());
+    assert_eq!(m.first(), 2);
+    assert_eq!(m.due(|_| false, 10), [Coord::leaf(2), Coord::new(1, 0)]);
+    assert_eq!(m.due(|c| c.l == 0, 10), [Coord::new(1, 0)]);
+    assert_eq!(m.due(|_| false, 1), [Coord::leaf(2)]);
+    m.add_node(Coord::leaf(3), "d".into());
+    assert_eq!(m.due(|_| false, 10), [Coord::leaf(2), Coord::new(1, 0)]);
+    assert_eq!(m.context(2).unwrap(), ["a", "b"]);
+    assert!(
+        m.context(4).is_err(),
+        "an unbuilt line before the limit is loud"
+    );
+    assert_eq!(
+        m.lines()[2..4],
+        [format!("2+1|{PLACEHOLDER}"), "3+1|d".into()]
+    );
+    assert!(m.render().starts_with("<chat>\n0+1|a\n1+1|b\n") && m.render().ends_with("\n</chat>"));
+}
+
+#[test]
+fn short_messages_are_their_own_nodes() {
+    let (_tmp, d) = store();
+    let s = Store::open(&d).unwrap();
+    let (first, built, snap) = s
+        .append(
+            "t",
+            &[
+                msg(Kind::User, "hi\nthere"),
+                msg(Kind::Talk, "hello"),
+                msg(Kind::Echo, long(2)),
+            ],
+        )
+        .unwrap();
+    assert_eq!(first, 0);
+    let names: Vec<_> = built.iter().map(|(c, t)| format!("{c}={t}")).collect();
+    assert_eq!(
+        names,
+        [
+            "0+1=user: hi there",
+            "1+1=talk: hello",
+            "0+2=user: hi there talk: hello"
+        ]
+    );
+    assert_eq!(snap.node(Coord::new(1, 0)).unwrap().unwrap().model, "-");
+    assert!(snap.node(Coord::leaf(2)).unwrap().is_none());
+    let exact = "x".repeat(NODE - "note: ".len());
+    let (_, built, snap) = s.append("t", &[msg(Kind::Note, exact.clone())]).unwrap();
+    assert_eq!(
+        built.len(),
+        1,
+        "the merge of a long line and a full one is not free"
+    );
+    assert_eq!(
+        snap.node(Coord::leaf(3)).unwrap().unwrap().text,
+        format!("note: {exact}")
+    );
+    let (built, snap) = s.put_node(Coord::leaf(2), "fake", "echo: long").unwrap();
+    assert_eq!(built.len(), 1);
+    assert!(snap.node(Coord::new(1, 1)).unwrap().is_none());
+    let (again, _) = s.put_node(Coord::leaf(2), "fake", "other").unwrap();
+    assert!(again.is_empty(), "built nodes never change");
+    assert!(s.put_node(Coord::new(3, 0), "fake", "x").is_err());
+    let m = Mem::load(&s.snapshot().unwrap(), VIEW).unwrap();
+    assert_eq!(m.t(), 4);
+    assert!(m.all_built());
+}
+
+#[test]
+fn zoom_opens_one_level() {
+    let (_tmp, d) = store();
+    let s = Store::open(&d).unwrap();
+    let items: Vec<_> = (0..5)
+        .map(|i| msg(Kind::User, format!("word {i}\nmore")))
+        .collect();
+    s.append("t", &items).unwrap();
+    s.append("t", &[msg(Kind::Echo, long(5))]).unwrap();
+    let snap = s.snapshot().unwrap();
+    let z = |id, n| zoom(&snap, id, n).unwrap();
+    assert_eq!(z(1, 1).unwrap(), "1+0|user: word 1\nmore");
+    assert_eq!(z(5, 1).unwrap(), format!("5+0|echo: {}", long(5)));
+    assert_eq!(
+        z(0, 4).unwrap(),
+        "0+2|user: word 0 more user: word 1 more\n2+2|user: word 2 more user: word 3 more"
+    );
+    assert_eq!(
+        z(0, 2).unwrap(),
+        "0+1|user: word 0 more\n1+1|user: word 1 more"
+    );
+    assert_eq!(z(4, 2), None, "4+2 is not built: message 5 has no line yet");
+    assert_eq!(z(3, 2), None);
+    assert_eq!(z(0, 8), None);
+    assert_eq!(z(6, 1), None);
+    assert_eq!(z(0, 3), None);
+}
+
+#[test]
+fn the_compactor_builds_in_order_and_settles() {
+    let (_tmp, d) = store();
+    let s = Store::open(&d).unwrap();
+    let items: Vec<_> = (0..12).map(|i| msg(Kind::User, long(i))).collect();
+    s.append("t", &items).unwrap();
+    let fake = Arc::new(Fake::summaries());
+    let mut c = compactor(&s, &fake, opts(VIEW, 3));
+    assert_eq!(c.mem().first(), 0);
+    c.settle().unwrap();
+    assert!(c.mem().all_built());
+    c.run(|_| Ok(())).unwrap();
+    let log = fake.log.lock().unwrap().clone();
+    let leaves: Vec<_> = log.iter().filter(|t| t.starts_with('m')).cloned().collect();
+    assert_eq!(
+        leaves,
+        (0..12).map(|i| format!("m{i}")).collect::<Vec<_>>(),
+        "messages in order"
+    );
+    assert_eq!(log.len(), 12 + 6 + 3 + 1);
+    let peak = fake.peak.load(Ordering::SeqCst);
+    assert!((2..=3).contains(&peak), "peak {peak}");
+    assert_eq!(c.built(), 22);
+    let snap = s.snapshot().unwrap();
+    assert!(snap.node(Coord::new(3, 0)).unwrap().is_some());
+    assert!(snap.node(Coord::new(4, 0)).unwrap().is_none());
+    assert_eq!(snap.node(Coord::leaf(0)).unwrap().unwrap().model, "fake");
+    let loaded = Mem::load(&snap, VIEW).unwrap();
+    for l in 0..4 {
+        for i in 0..12 >> l {
+            let k = Coord::new(l, i);
+            assert_eq!(loaded.text(k), c.mem().text(k), "{k}");
+        }
+    }
+    assert!(
+        Compactor::new(&s, Arc::new(Model(fake.clone())), Options::default())
+            .unwrap()
+            .is_none()
+    );
+    drop(c);
+    assert!(
+        Compactor::new(&s, Arc::new(Model(fake.clone())), Options::default())
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
+fn the_compactor_folds_the_view_under_its_budget() {
+    let (_tmp, d) = store();
+    let s = Store::open(&d).unwrap();
+    let fake = Arc::new(Fake::summaries());
+    let mut c = compactor(&s, &fake, opts(3000, 8));
+    for i in 0..100 {
+        c.log(&[msg(Kind::Echo, long(i))]).unwrap();
+        c.settle().unwrap();
+        check_tiles(c.mem());
+        assert!(c.mem().size() <= 3000 || !mergeable(c.mem()));
+    }
+    assert!(c.mem().view().len() < 30);
+    assert_eq!(
+        fake.log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|t| t.starts_with('m'))
+            .count(),
+        100
+    );
+}
+
+#[test]
+fn notes_from_elsewhere_are_picked_up() {
+    let (_tmp, d) = store();
+    let s = Store::open(&d).unwrap();
+    s.append("t", &[msg(Kind::User, long(0))]).unwrap();
+    let fake = Arc::new(Fake::summaries());
+    let mut c = compactor(&s, &fake, opts(VIEW, 8));
+    let other = Store::open(&d).unwrap();
+    other.append("t", &[msg(Kind::Note, long(1))]).unwrap();
+    c.run(|_| Ok(())).unwrap();
+    assert_eq!(c.mem().t(), 2);
+    assert!(c.mem().built(Coord::new(1, 0)));
+}
+
+#[test]
+fn overshoots_are_retried_in_the_same_conversation() {
+    let (_tmp, d) = store();
+    let s = Store::open(&d).unwrap();
+    s.append("t", &[msg(Kind::User, long(0))]).unwrap();
+    let fake = Arc::new(Fake::new(|_, attempt| {
+        Ok(format!("  {}  ", "z".repeat(600 - 40 * attempt)))
+    }));
+    let mut c = compactor(&s, &fake, opts(VIEW, 8));
+    c.run(|_| Ok(())).unwrap();
+    assert_eq!(
+        (
+            fake.calls.load(Ordering::SeqCst),
+            fake.says.load(Ordering::SeqCst)
+        ),
+        (1, 3)
+    );
+    assert_eq!(c.mem().text(Coord::leaf(0)).unwrap().len(), 480);
+
+    s.append("t", &[msg(Kind::User, long(1))]).unwrap();
+    let stubborn = Arc::new(Fake::new(|_, attempt| Ok("w".repeat(700 - attempt))));
+    drop(c);
+    let mut c = compactor(&s, &stubborn, opts(VIEW, 8));
+    c.run(|_| Ok(())).unwrap();
+    assert_eq!(
+        stubborn.calls.load(Ordering::SeqCst),
+        2,
+        "message 1, then 0+2"
+    );
+    assert_eq!(stubborn.says.load(Ordering::SeqCst), 10, "TRIES each");
+    assert_eq!(
+        c.mem().text(Coord::leaf(1)).unwrap().len(),
+        695,
+        "the shortest try"
+    );
+}
+
+#[test]
+fn failures_are_retried_and_reported_once() {
+    let (_tmp, d) = store();
+    let s = Store::open(&d).unwrap();
+    s.append("t", &[msg(Kind::User, long(0))]).unwrap();
+    let left = Arc::new(Mutex::new(3));
+    let l2 = left.clone();
+    let fake = Arc::new(Fake::new(move |_, _| {
+        let mut n = l2.lock().unwrap();
+        if *n > 0 {
+            *n -= 1;
+            bail!("overloaded");
+        }
+        Ok("a summary".into())
+    }));
+    let mut c = compactor(&s, &fake, opts(VIEW, 8));
+    let mut reports = Vec::new();
+    c.run(|c| {
+        reports.extend(c.take_reports());
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(reports, ["0+1: overloaded"]);
+    assert_eq!(fake.calls.load(Ordering::SeqCst), 4);
+    assert_eq!(c.mem().text(Coord::leaf(0)), Some("a summary"));
+    let blanks = AtomicUsize::new(0);
+    let empty = Arc::new(Fake::new(move |_, _| {
+        let n = blanks.fetch_add(1, Ordering::SeqCst);
+        Ok(if n < 2 { "  ".into() } else { "x".into() })
+    }));
+    s.append("t", &[msg(Kind::User, long(1))]).unwrap();
+    drop(c);
+    let mut c = compactor(&s, &empty, opts(VIEW, 8));
+    c.run(|_| Ok(())).unwrap();
+    assert_eq!(c.take_reports(), ["1+1: empty reply"]);
+}
+
+#[test]
+fn a_life_through_the_cli() {
     let (tmp, d) = store();
     let d = d.as_path();
-    let wake_lines = Knob::WakeLines.default() as usize;
-
-    let r = run(d, &["note", &"x".repeat(281)]);
-    assert!(
-        r.code == 1 && r.stderr.contains("Too long"),
-        "over-long note accepted"
-    );
+    let r = run(d, &["note", &"x".repeat(507)]);
+    assert!(r.code == 1 && r.stderr.contains("Too long"), "{}", r.stderr);
     let r = run(d, &["note", "two\nlines"]);
-    assert!(
-        r.code == 1 && r.stderr.contains("one line"),
-        "multi-line note accepted"
-    );
-    assert_eq!(run(d, &["note", "   "]).code, 1, "empty note accepted");
+    assert!(r.code == 1 && r.stderr.contains("one line"));
+    assert_eq!(run(d, &["note", "   "]).code, 1);
     let r = run(d, &["wake"]);
-    assert!(r.stdout.contains("No memories yet"));
-    assert!(r.stdout.trim_end().ends_with("You are awake."));
+    assert!(r.stdout.contains("No memories yet") && r.stdout.ends_with("You are awake.\n"));
+    assert_eq!(run(d, &["nap"]).stdout, "Nothing to build.\n");
 
     let seed = tmp.path().join("seed.txt");
-    let day = jiff::civil::date(2020, 1, 1);
-    let lines: String = (0..N)
-        .map(|i| {
-            format!(
-                "{} memory number {i}, a thing that happened, was weighed against the rest of the \
-                 week, turned out to matter more than anyone guessed at the time, and left a mark \
-                 on every plan that followed it\n",
-                day.checked_add(jiff::Span::new().days((i / 5) as i64))
-                    .unwrap()
-            )
-        })
+    let lines: String = (0..40)
+        .map(|i| format!("2020-01-{:02} message {i} {}\n", 1 + i / 2, "n".repeat(300)))
         .collect();
     fs::write(&seed, lines).unwrap();
     let r = run(d, &["import", seed.to_str().unwrap()]);
-    assert!(
-        r.stdout.contains(&format!("Imported {N}")),
-        "import failed: {}{}",
-        r.stdout,
+    assert_eq!(
+        r.stdout, "Imported 40 notes, 0+1 to 39+1.\n",
+        "{}",
         r.stderr
     );
+    let r = run(d, &["note", "a short one"]);
+    assert_eq!(r.stdout, "Saved as 40+1.\n");
+    let r = run(d, &["note", &format!("big {}", "b".repeat(500))]);
+    assert_eq!(r.stdout, "Saved as 41+1.\n");
+
+    let wake = run(d, &["wake"]).stdout;
     assert!(
-        !fs::read_to_string(d.join("config"))
+        wake.starts_with("<chat>\n0+1|note: message 0 nnn"),
+        "{wake}"
+    );
+    assert!(wake.contains("\n40+1|note: a short one\n"));
+    assert!(wake.ends_with("</chat>\nYou are awake.\n"));
+
+    let rt = runtime(Arc::new(Model(Arc::new(Fake::summaries()))));
+    let r = run_rt(d, &rt, &["nap"]);
+    assert!(
+        Regex::new(r"^Built \d+ summaries\.\n$")
             .unwrap()
-            .contains("wakeLines"),
-        "a store wrote its own sizes"
-    );
-    let s = Store::open(d).unwrap();
-    let snap = s.snapshot().unwrap();
-    let ts: Vec<_> = (0..3).map(|i| snap.log_get(i).unwrap().ts).collect();
-    assert_eq!(
-        ts,
-        ["20200101T000000Z", "20200101T000001Z", "20200101T000002Z"]
-    );
-    assert_eq!(snap.log_get(5).unwrap().ts, "20200102T000000Z");
-    let keys: Vec<_> = (0..N).map(|i| snap.log_get(i).unwrap().key()).collect();
-    assert!(keys.windows(2).all(|w| w[0] < w[1]), "keys out of order");
-
-    let r = run(d, &["wake"]);
-    assert!(
-        r.code == 1 && r.stdout.contains("Cannot wake"),
-        "wake must refuse while work is pending"
-    );
-    assert!(r.stdout.contains("wake again"));
-
-    let mut naps = 0;
-    let mut r = run(d, &["nap"]);
-    assert!(r.stdout.contains("Compress memories #"));
-    while !r.stdout.contains("Nothing left to compress") {
-        let line = offered(&r.stdout);
-        assert!(
-            !line.is_empty(),
-            "no command offered:\n{}{}",
-            r.stdout,
-            r.stderr
-        );
-        assert!(
-            line[0].starts_with("Run: "),
-            "offered as a label: {:?}",
-            line[0]
-        );
-        let id = nap_id(&r.stdout).unwrap();
-        let body: Vec<_> = r
-            .stdout
-            .lines()
-            .filter(|l| l.starts_with("  #"))
-            .map(str::trim)
-            .collect();
-        let joined: String = body.join(" ").chars().take(280).collect();
-        let text = match joined.trim() {
-            "" => "empty",
-            t => t,
-        };
-        r = run(d, &["nap", &id, text]);
-        assert_eq!(r.code, 0, "nap rejected a valid merge: {}", r.stderr);
-        naps += 1;
-    }
-    assert!(
-        !r.stdout.contains("You are awake"),
-        "nap must never claim the agent is awake"
-    );
-    assert_eq!(naps, complete(N).len());
-    assert_eq!(
-        run(d, &["wake"]).code,
-        0,
-        "wake still refuses after a full nap chain"
-    );
-
-    let mut parts = Vec::new();
-    for k in 1.. {
-        let r = run(d, &["wake", &k.to_string()]);
-        if r.code != 0 {
-            break;
-        }
-        assert!(
-            r.stdout.len() < CAP_CHARS,
-            "part {k} is {} chars",
-            r.stdout.len()
-        );
-        assert!(
-            r.stdout.lines().count() < CAP_LINES,
-            "part {k} is over {CAP_LINES} lines"
-        );
-        parts.push(
-            r.stdout
-                .lines()
-                .filter(|l| l.starts_with('#'))
-                .map(String::from)
-                .collect::<Vec<_>>(),
-        );
-    }
-    assert!(
-        parts.len() > 1,
-        "a {wake_lines}-line memory should need more than one part"
-    );
-    let lines: Vec<_> = parts.concat();
-    assert_eq!(lines.len(), wake_lines);
-    assert!(
-        lines[lines.len() - 1].starts_with(&format!("#{} ", N - 1)),
-        "newest memory not last / not raw"
-    );
-    assert!(
-        lines[0].starts_with("#0-"),
-        "oldest line should be a summary block"
-    );
-    assert!(
-        Regex::new(r"Run: ai memory wake 2")
-            .unwrap()
-            .is_match(&run(d, &["wake"]).stdout)
-    );
-    assert!(
-        run(d, &["wake", &parts.len().to_string()])
-            .stdout
-            .contains("You are awake.")
-    );
-    assert_eq!(run(d, &["wake", &(parts.len() + 1).to_string()]).code, 1);
-
-    run(d, &["note", "one more thing happened today"]);
-    assert_eq!(log_len(d), N + 1, "note did not append");
-    let s = Store::open(d).unwrap();
-    let snap = s.snapshot().unwrap();
-    for dir in [LOG.to_string(), level(2), level(1024)] {
-        for k in 0..8 {
-            assert_eq!(snap.read(&seg_path(&dir, k)).unwrap().len() % REC, 0);
-        }
-    }
-    assert_eq!(
-        snap.read(&seg_path(LOG, 7)).unwrap().len(),
-        (N + 1 - 7 * 256) as usize * REC
-    );
-
-    let r = run(d, &["nap", "0-1", "attempted overwrite"]);
-    assert!(r.code == 0 && r.stdout.contains("Nothing left to compress"));
-
-    let r = run(d, &["grep", "memory number 7,"]);
-    let origin = Store::open(d).unwrap().origin().unwrap();
-    assert_eq!(
-        r.stdout,
-        format!(
-            "#7 2020-01-02 00:00 {origin} - {}\n1 match.\n",
-            snap.log_get(7).unwrap().text
-        )
-    );
-    assert!(
-        run(d, &["grep", "^memory number 7,"])
-            .stdout
-            .contains("#7 ")
-    );
-    for (args, hit) in [
-        (&["2020-01-02"][..], false),
-        (&["Memory Number 7,"], false),
-        (&["-i", "Memory Number 7,"], true),
-        (&["-s", "-i", "Memory Number 7,"], true),
-        (&["-i", "-s", "Memory Number 7,"], false),
-        (&["number 7,", "--since", "2020-01-02"], true),
-        (&["number 7,", "--since", "2020-01-03"], false),
-        (&["-F", "number 7, a"], true),
-        (&["-F", "number 7.*"], false),
-        (&["-F", "("], false),
-    ] {
-        let r = run(d, &[&["grep"], args].concat());
-        assert_eq!(r.code, 0, "grep {args:?}: {}", r.stderr);
-        assert_eq!(
-            r.stdout != "No match.\n",
-            hit,
-            "grep {args:?}: {}",
-            r.stdout
-        );
-    }
-    let r = run(d, &["grep", "("]);
-    assert!(
-        r.code == 1 && r.stderr.contains("bad regex"),
-        "{}",
-        r.stderr
-    );
-    assert_eq!(
-        run(d, &["grep", "memory number", "-c"]).stdout,
-        "2000 matches.\n"
-    );
-
-    let r = run(d, &["grep", "memory number", "-m", "5"]);
-    let got: Vec<_> = r
-        .stdout
-        .lines()
-        .map(|l| l.split(' ').next().unwrap())
-        .collect();
-    assert_eq!(got, ["#1995", "#1996", "#1997", "#1998", "#1999", "Newest"]);
-    assert!(
-        r.stdout.ends_with(
-            "Newest 5 of 2000. Older: ai memory grep 'memory number' -m 5 --before 1995\n"
-        ),
-        "{}",
-        r.stdout
-    );
-    let (mut seen, mut cmd) = (Vec::new(), vec!["grep".to_string(), "memory number".into()]);
-    loop {
-        let r = run(d, &cmd.iter().map(String::as_str).collect::<Vec<_>>());
-        assert!(r.code == 0 && r.stdout.len() < CAP_CHARS, "{}", r.stderr);
-        let mut page: Vec<u64> = r
-            .stdout
-            .lines()
-            .filter_map(|l| l.strip_prefix('#')?.split(' ').next()?.parse().ok())
-            .collect();
-        page.append(&mut seen);
-        seen = page;
-        let Some(next) = r.stdout.lines().last().unwrap().split(" --before ").nth(1) else {
-            break;
-        };
-        cmd = vec![
-            "grep".into(),
-            "memory number".into(),
-            "--before".into(),
-            next.into(),
-        ];
-    }
-    assert_eq!(
-        seen,
-        (0..N).collect::<Vec<_>>(),
-        "paging lost or repeated a match"
-    );
-
-    let pat = "memory number 7[0-9],";
-    let lines = |out: &str| -> Vec<String> {
-        out.lines()
-            .filter(|l| l.starts_with('#'))
-            .map(String::from)
-            .collect()
-    };
-    let all = run(d, &["grep", pat, "-t"]).stdout;
-    assert!(
-        all.contains("#70 ") && all.contains("#70-71 ") && all.contains("#72-79 "),
-        "{all}"
-    );
-    let (mut paged, mut before) = (Vec::new(), None::<String>);
-    loop {
-        let mut args = vec!["grep", pat, "-t", "-m", "3"];
-        if let Some(b) = &before {
-            args.extend(["--before", b]);
-        }
-        let out = run(d, &args).stdout;
-        paged.splice(0..0, lines(&out));
-        match out.lines().last().unwrap().split(" --before ").nth(1) {
-            Some(b) => before = Some(b.into()),
-            None => break,
-        }
-    }
-    assert_eq!(paged, lines(&all), "tree paging differs from one page");
-
-    let target = 777;
-    let (mut b, mut calls) = ((0, 1024), 0);
-    loop {
-        let kids = ids(d, &[&format!("{}-{}", b.0, b.1 - 1)]);
-        calls += 1;
-        assert_eq!((kids[0].0, kids[kids.len() - 1].1), b, "zoom left a gap");
-        assert!(kids.windows(2).all(|w| w[0].1 == w[1].0));
-        if kids.iter().all(|k| k.1 - k.0 == 1) {
-            assert_eq!(kids.len(), 16);
-            break;
-        }
-        assert_eq!(kids.len(), 8, "depth 3 is 8 nodes");
-        for k in &kids {
-            ids(d, &[&format!("{}-{}", k.0, k.1 - 1)]);
-        }
-        b = *kids.iter().find(|k| k.0 <= target && target < k.1).unwrap();
-    }
-    assert_eq!(calls, 3, "1024 -> 128 -> 16 -> raw");
-    assert_eq!(ids(d, &["0-1023", "--depth", "1"]), [(0, 512), (512, 1024)]);
-    assert_eq!(ids(d, &["768-783", "--depth", "1"]).len(), 16);
-    assert_eq!(ids(d, &["0-31", "--depth", "4"]).len(), 32);
-    assert_eq!(ids(d, &["#777"]), [(777, 778)]);
-    assert_eq!(ids(d, &["777"]), ids(d, &["776-777"])[1..]);
-    assert!(
-        run(d, &["zoom", "776-777"])
-            .stdout
-            .contains(&format!("memory number {target},"))
-    );
-    let r = run(d, &["zoom", "0-127", "--depth", "6"]);
-    assert!(
-        r.code == 1
-            && r.stderr.contains("128 lines")
-            && r.stderr.contains("use --depth 5")
-            && r.stderr.contains("Run: ai memory zoom 0-127 --depth 5"),
-        "{}",
-        r.stderr
-    );
-    assert_eq!(ids(d, &["0-127", "--depth", "5"]).len(), 32);
-    run(d, &["config", "PART_CHARS=1000"]);
-    let r = run(d, &["zoom", "0-1023"]);
-    assert!(
-        r.code == 1 && r.stderr.contains("Run: ai memory zoom 0-1023 --depth 1"),
-        "{}",
-        r.stderr
-    );
-    assert_eq!(
-        ids(d, &["768-783"]).len(),
-        16,
-        "a raw block is never refused"
-    );
-    run(d, &["config", "PART_CHARS="]);
-    for bad in [&["0-1", "--depth", "0"][..], &["0-1", "--depth", "7"]] {
-        assert_eq!(run(d, &[&["zoom"], bad].concat()).code, 2, "{bad:?}");
-    }
-
-    let r = run(d, &["zoom", "1024-2047"]);
-    assert!(
-        r.stdout.contains("#1920-2047 not compressed yet"),
-        "{}",
-        r.stdout
-    );
-    let r = run(d, &["zoom", "1024-2047", "--depth", "1"]);
-    assert!(
-        r.stdout.contains("#1536-2047 not compressed yet"),
-        "{}",
-        r.stdout
-    );
-    let r = run(d, &["zoom", &format!("{N}-{}", N + 1)]);
-    assert!(
-        r.stdout.matches('\n').count() == 1 && r.stdout.contains(&format!("#{N} ")),
-        "{}",
-        r.stdout
-    );
-
-    assert_eq!(
-        run(d, &["zoom", "3-9"]).code,
-        1,
-        "zoom accepted a non-block"
-    );
-    assert_eq!(
-        run(d, &["zoom", "9-3"]).code,
-        1,
-        "zoom accepted a backwards range"
-    );
-    assert_ne!(run(d, &["zoom"]).code, 0, "zoom with no id must show usage");
-    let r = run(d, &["zoom", "1048576-2097151"]);
-    assert!(
-        r.code == 1
-            && r.stderr.contains("beyond the memory")
-            && r.stderr.contains("ai memory wake")
-    );
-
-    let (before, log) = (built(d), log_bytes(d));
-    let r = run(d, &["forget", "16-31"]);
-    assert!(r.stdout.contains("16-31"), "{}{}", r.stdout, r.stderr);
-    assert!(built(d) < before, "forget did not shrink the tree");
-    assert_eq!(log_bytes(d), log, "forget touched the log");
-    assert_eq!(
-        run(d, &["wake"]).code,
-        1,
-        "wake should refuse after a forget"
-    );
-    let mid = state(d);
-    let r = run(d, &["nap", "0-1", "attempted overwrite"]);
-    assert!(
-        r.code == 0 && r.stdout.contains("already settled"),
-        "{}",
-        r.stderr
-    );
-    assert_eq!(
-        state(d),
-        mid,
-        "resubmitting a settled block wrote something"
-    );
-    let r = run(d, &["nap", "0-31", "out of order"]);
-    assert!(r.code == 1 && r.stderr.contains("Wrong block"));
-    assert!(
-        settle(d, "rebuilt after forget") > 0,
-        "forget created no work"
-    );
-    assert_eq!(run(d, &["wake"]).code, 0);
-    assert_eq!(built(d), before, "tree did not return to its original size");
-    assert_eq!(run(d, &["forget", "17-32"]).code, 1);
-    run(d, &["forget", "16-31"]);
-    let z = run(d, &["zoom", "0-31", "--depth", "1"]).stdout;
-    assert!(z.contains("#16-31 not compressed yet"), "{z}");
-    settle(d, "rebuilt after forget");
-    assert_eq!(built(d), before);
-    assert_eq!(run(d, &["forget", "1048576-1048577"]).code, 1);
-
-    run(
-        d,
-        &[
-            "note",
-            "reunião com João em São Paulo: ação aprovada, coração tranquilo",
-        ],
-    );
-    run(
-        d,
-        &["note", "a plain ascii memory right after the accented one"],
-    );
-    assert!(run(d, &["grep", "coração"]).stdout.contains("João"));
-    assert!(run(d, &["grep", "CORAÇÃO", "-i"]).stdout.contains("João"));
-    assert!(
-        run(d, &["grep", "plain ascii memory right after"])
-            .stdout
-            .contains(&format!("#{} ", N + 2))
-    );
-    let r = run(d, &["note", &"ã".repeat(150)]);
-    assert!(
-        r.code == 1 && r.stderr.contains("300 bytes"),
-        "{}",
-        r.stderr
-    );
-
-    settle(d, "settled");
-    assert_eq!(run(d, &["wake"]).code, 0);
-
-    let t0 = log_len(d);
-    let before = run(d, &["wake", "1", &t0.to_string()]);
-    assert_eq!(before.code, 0, "{}{}", before.stdout, before.stderr);
-    run(d, &["note", "a note that lands between two wake calls"]);
-    assert_eq!(
-        run(d, &["wake", "1", &t0.to_string()]).stdout,
-        before.stdout
-    );
-    assert_eq!(run(d, &["wake", "1", &(t0 + 99).to_string()]).code, 1);
-
-    settle(d, "settled mid-wake");
-    let r = run(d, &["wake", "1", &t0.to_string()]);
-    assert!(
-        r.code == 0 && r.stdout == before.stdout,
+            .is_match(&r.stdout),
         "{}{}",
         r.stdout,
         r.stderr
     );
     let s = Store::open(d).unwrap();
     let snap = s.snapshot().unwrap();
-    for t in (1..40).chain([t0 - 1, t0, t0 + 1]) {
-        assert_eq!(
-            pending_count(&snap, t).unwrap(),
-            pending(&snap, t, None).unwrap().len() as u64,
-            "pending_count disagrees with pending at T={t}"
+    for l in 0..6 {
+        for i in 0..42u64 >> l {
+            assert!(
+                snap.node(Coord::new(l, i)).unwrap().is_some(),
+                "{}",
+                Coord::new(l, i)
+            );
+        }
+    }
+    assert_eq!(run(d, &["nap"]).stdout, "Nothing to build.\n");
+
+    assert_eq!(run(d, &["config", "PART_CHARS=600"]).code, 0);
+    let first = run(d, &["wake"]).stdout;
+    assert!(first.starts_with("Your memory, part 1 of "), "{first}");
+    let pin = Regex::new(r"Not awake yet\. Run: ai memory wake 2 ([0-9a-f]{40})\n$")
+        .unwrap()
+        .captures(&first)
+        .unwrap_or_else(|| panic!("{first}"))[1]
+        .to_string();
+    run(d, &["note", "lands between two parts"]);
+    let mut all = Vec::new();
+    for k in 1.. {
+        let r = run(d, &["wake", &k.to_string(), &pin]);
+        assert_eq!(r.code, 0, "{}", r.stderr);
+        all.extend(
+            r.stdout
+                .lines()
+                .filter(|l| l.contains('|'))
+                .map(String::from),
         );
+        if r.stdout.ends_with("You are awake.\n") {
+            break;
+        }
     }
+    assert!(!all.iter().any(|l| l.contains("lands between")));
+    assert!(all.last().unwrap().starts_with("41+1|"));
+    assert!(
+        run(d, &["wake", "1", "deadbeef"])
+            .stderr
+            .contains("not a commit")
+    );
+    assert_eq!(run(d, &["config", "PART_CHARS="]).code, 0);
 
-    let r = run(d, &["grep", "memory number"]);
-    assert!(r.stdout.len() < CAP_CHARS);
+    let z = run(d, &["zoom", "0+32"]).stdout;
+    assert_eq!(z.lines().count(), 2);
+    assert!(z.starts_with("0+16|") && z.contains("\n16+16|"));
     assert!(
-        r.stdout
-            .contains("Older: ai memory grep 'memory number' --before ")
-    );
-
-    let r = run(d, &["config", "WAKE_LINES=12"]);
-    assert!(
-        r.stdout.contains("12") && r.stdout.contains("default 96"),
-        "{}",
-        r.stdout
-    );
-    assert!(
-        run(d, &["wake"]).stdout.lines().count() <= 13,
-        "wake ignored the new size"
-    );
-    let r = run(d, &["config", "WAKE_LINES="]);
-    assert!(!r.stdout.contains("default"));
-    assert!(
-        run(d, &["wake"]).stdout.lines().count() > 13,
-        "the default did not come back"
-    );
-    for bad in [
-        "WAKE_LINES=0",
-        "WAKE_LINES=x",
-        "ENTRY_CHARS=999",
-        "NOPE=1",
-        "WAKE_LINES",
-    ] {
-        assert_eq!(run(d, &["config", bad]).code, 1, "config accepted {bad}");
-    }
-
-    run(d, &["config", "WAKE_LINES=12"]);
-    let before = state(d);
-    assert!(before.0.is_some() && String::from_utf8_lossy(&before.1).contains("wakeLines = 12"));
-    for _ in 0..3 {
-        let r = run(d, &["init"]);
-        assert!(r.code == 0 && r.stdout.contains("Found"));
-    }
-    assert_eq!(state(d), before, "init modified an existing memory");
-    assert!(
-        run(d, &["wake"])
+        run(d, &["zoom", "3"])
             .stdout
-            .trim_end()
-            .ends_with("You are awake.")
+            .starts_with("3+0|note: message 3 n")
+    );
+    assert_eq!(run(d, &["zoom", "0+64"]).stderr, "No line 0+64.");
+    assert_eq!(run(d, &["zoom", "1+2"]).stderr, "No line 1+2.");
+    assert!(run(d, &["zoom", "x"]).stderr.contains("not an id+n"));
+
+    let show = run(d, &["show", "40+1"]).stdout;
+    assert!(show.starts_with("40+1\nts      "));
+    assert!(show.contains("\nkind    note\n") && show.contains("\ntext    a short one\n"));
+    let show = run(d, &["show", "0+2"]).stdout;
+    assert!(show.contains("\nmodel   fake\n") && show.contains("\ntext    join."));
+
+    let g = run(d, &["grep", "message 3\\b"]).stdout;
+    assert!(
+        g.starts_with("3+1 2020-01-02 00:00 - note: message 3 nnn"),
+        "{g}"
+    );
+    assert!(g.ends_with("\n1 match.\n"));
+    let g = run(d, &["grep", "^join", "-t", "-c"]).stdout;
+    assert!(
+        Regex::new(r"^\d+ matches\.\n$").unwrap().is_match(&g),
+        "{g}"
+    );
+    assert_eq!(
+        run(d, &["grep", "join", "-t", "--kind", "note"]).stdout,
+        "No match.\n"
+    );
+    let g = run(d, &["grep", "message", "-m", "5"]).stdout;
+    let footer = g.lines().last().unwrap();
+    assert_eq!(
+        footer,
+        "Newest 5 of 40. Older: ai memory grep 'message' -m 5 --before 35+1"
+    );
+    let g = run(d, &["grep", "big"]).stdout;
+    assert!(g.contains("note: big bbb") && g.contains('…'));
+    assert_eq!(run(d, &["grep", "^"]).code, 0);
+
+    let bad = tmp.path().join("bad.txt");
+    fs::write(&bad, "2019-01-01 too old\n").unwrap();
+    assert!(
+        run(d, &["import", bad.to_str().unwrap()])
+            .stderr
+            .contains("precedes")
+    );
+    fs::write(&bad, "2021-02-30 no such day\n").unwrap();
+    assert!(
+        run(d, &["import", bad.to_str().unwrap()])
+            .stderr
+            .contains("not a real date")
+    );
+}
+
+#[test]
+fn init_prints_the_block_and_is_idempotent() {
+    let (_tmp, d) = store();
+    let r = run(&d, &["init"]);
+    assert!(r.stdout.starts_with("Found "));
+    assert!(
+        r.stdout
+            .contains("ai memory note \"<1 line, max 506 bytes>\"")
+    );
+    assert!(r.stdout.contains("ai memory zoom <id+n>"));
+    assert!(!r.stdout.contains("nap"));
+}
+
+#[test]
+fn a_bad_knob_names_its_key() {
+    let (_tmp, d) = store();
+    fs::write(
+        d.join("config"),
+        fs::read_to_string(d.join("config")).unwrap() + "[ai \"memory\"]\n\tpartChars = lots\n",
+    )
+    .unwrap();
+    let r = run(&d, &["wake"]);
+    assert!(
+        r.stderr
+            .contains("ai.memory.partChars must be a positive whole number"),
+        "{}",
+        r.stderr
     );
 }
 
 #[test]
 fn a_missing_dir_is_reported_not_created() {
     let tmp = TempDir::new().unwrap();
-    let ghost = tmp.path().join("typo");
-    let r = run(&ghost, &["wake"]);
-    assert!(
-        r.code == 1 && r.stderr.contains("No memory at") && r.stderr.contains("ai memory init")
-    );
-    assert!(!ghost.exists());
-}
-
-#[test]
-fn init_prints_the_block_and_is_idempotent() {
-    let tmp = TempDir::new().unwrap();
-    let d = tmp.path().join("m");
-    let r = run(&d, &["init"]);
-    assert!(r.code == 0 && r.stdout.contains("## Memory") && r.stdout.contains("You are a"));
-    assert!(r.stdout.contains("Don't run ai memory.`"));
-    assert!(r.stdout.contains("your memory."));
-    assert!(
-        r.stdout
-            .contains("Parallel sessions on this machine are all you")
-    );
-    assert!(!r.stdout.contains("OptMem") && !r.stdout.contains("repository"));
-    assert!(d.join("HEAD").exists() && d.join("objects").is_dir());
-    assert!(run(&d, &["init"]).stdout.contains("Found"));
-    assert!(run(&d, &["wake"]).stdout.contains("You are awake."));
-}
-
-#[test]
-fn init_refuses_a_foreign_dir() {
-    let tmp = TempDir::new().unwrap();
-    fs::write(tmp.path().join("LOG.txt"), "#0 2026-01-01 an old store\n").unwrap();
-    let r = run(tmp.path(), &["init"]);
-    assert!(
-        r.code == 1 && r.stderr.contains("not a memory"),
-        "{}",
-        r.stderr
-    );
-    assert!(run(tmp.path(), &["wake"]).stderr.contains("No memory at"));
-    assert!(!tmp.path().join("HEAD").exists());
-}
-
-#[test]
-fn a_bad_knob_names_its_key() {
-    let (_tmp, d) = store();
-    let mut cfg = fs::read_to_string(d.join("config")).unwrap();
-    cfg += "[ai \"memory\"]\n\twakeLines = many\n";
-    fs::write(d.join("config"), cfg).unwrap();
-    for c in ["wake", "config"] {
-        let r = run(&d, &[c]);
-        assert!(
-            r.code == 1
-                && r.stderr.contains("config: ai.memory.wakeLines")
-                && r.stderr.contains("'many'"),
-            "{}",
-            r.stderr
-        );
-    }
-}
-
-#[test]
-fn filesystem_errors_speak_plainly() {
-    let tmp = TempDir::new().unwrap();
-    let file = tmp.path().join("file");
-    fs::write(&file, "").unwrap();
-    let r = run(&file, &["init"]);
-    assert!(
-        r.code == 1 && r.stderr.ends_with("file: File exists."),
-        "{}",
-        r.stderr
-    );
-}
-
-#[test]
-fn parallel_notes_get_distinct_ids() {
-    let (_tmp, d) = store();
-    let p = 16;
-    thread::scope(|sc| {
-        for i in 0..p {
-            let d = &d;
-            sc.spawn(move || {
-                let r = run(d, &["note", &format!("parallel note {i}")]);
-                assert_eq!(r.code, 0, "{}", r.stderr);
-            });
-        }
-    });
-    let s = Store::open(&d).unwrap();
-    let snap = s.snapshot().unwrap();
-    let all = snap.log_slice(0, snap.log_len().unwrap()).unwrap();
-    let mut texts: Vec<_> = all.iter().map(|m| m.text.clone()).collect();
-    texts.sort();
-    let mut want: Vec<_> = (0..p).map(|i| format!("parallel note {i}")).collect();
-    want.sort();
-    assert_eq!(texts, want);
-    assert!(
-        all.windows(2).all(|w| w[0].key() < w[1].key()),
-        "keys not strictly increasing"
-    );
-    assert!(
-        all.iter()
-            .all(|m| m.origin == all[0].origin && m.origin.len() == 6)
-    );
-
-    settle(&d, "settled");
-    assert!(
-        run(&d, &["wake"])
-            .stdout
-            .trim_end()
-            .ends_with("You are awake.")
-    );
-}
-
-#[test]
-fn summaries_carry_a_fingerprint_of_their_block() {
-    let (_tmp, d) = store();
-    for i in 0..2 {
-        run(&d, &["note", &format!("fingerprinted memory {i}")]);
-    }
-    run(&d, &["nap", "0-1", "both"]);
-    let s = Store::open(&d).unwrap();
-    let snap = s.snapshot().unwrap();
-    let rec = snap.read(&seg_path(&level(2), 0)).unwrap();
-    let sum = Summary::decode(&rec).unwrap();
-    let keys: Vec<_> = snap
-        .log_slice(0, 2)
-        .unwrap()
-        .iter()
-        .map(|m| m.key())
-        .collect();
-    let want = format!("{}\n{}\n", keys[0], keys[1]);
-    let digest = sha2::Sha256::digest(want.as_bytes());
-    let hex: String = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
-    assert_eq!(sum.fp, hex);
-    assert_eq!((sum.text.as_str(), sum.origin.len()), ("both", 6));
-}
-
-#[test]
-fn a_blank_summary_points_at_forget() {
-    let (tmp, d) = store();
-    for i in 0..4 {
-        run(&d, &["note", &format!("corrupt store memory {i}")]);
-    }
-    for (id, s) in [("0-1", "one"), ("2-3", "two"), ("0-3", "all")] {
-        run(&d, &["nap", id, s]);
-    }
-    run(&d, &["config", "WAKE_LINES=2"]);
-    rewrite(&d, &seg_path(&level(2), 0), |b| b[..REC - 1].fill(b' '));
+    let d = tmp.path().join("nope");
     let r = run(&d, &["wake"]);
-    assert!(
-        r.code == 1 && r.stderr.contains("forget 0-1"),
-        "{}{}",
-        r.stdout,
-        r.stderr
-    );
-
-    let bad = tmp.path().join("bad.txt");
-    fs::write(&bad, "2027-99-99 an impossible date\n").unwrap();
-    let r = run(&d, &["import", bad.to_str().unwrap()]);
-    assert!(
-        r.code == 1 && r.stderr.contains("not a real date"),
-        "{}",
-        r.stderr
-    );
+    assert!(r.code == 1 && r.stderr.contains("No memory at"));
+    assert!(!d.exists());
 }
 
 #[test]
-fn a_blank_half_points_at_forget() {
+fn a_note_whose_nap_finds_the_lock_taken_still_gets_built() {
     let (_tmp, d) = store();
-    for i in 0..32 {
-        run(&d, &["note", &format!("half probe memory {i}")]);
-    }
-    loop {
-        let r = run(&d, &["nap"]);
-        if r.stdout.contains("Compress memories #0-31 ") {
-            break;
-        }
-        run(&d, &["nap", &nap_id(&r.stdout).unwrap(), "settled"]);
-    }
-    rewrite(&d, &seg_path(&level(16), 0), |b| b[..REC - 1].fill(b' '));
-    let r = run(&d, &["nap"]);
-    assert!(
-        r.code == 1 && r.stderr.contains("forget 0-15"),
-        "{}{}",
-        r.stdout,
-        r.stderr
-    );
-}
-
-#[test]
-fn utf8_is_enforced() {
-    let (tmp, d) = store();
-    run(&d, &["note", "an arrow \u{2192} survives any locale"]);
-    assert!(run(&d, &["wake"]).stdout.contains('\u{2192}'));
-
-    let latin1 = tmp.path().join("latin1.txt");
-    fs::write(&latin1, b"2027-01-01 caf\xe9 in latin-1\n").unwrap();
-    let r = run(&d, &["import", latin1.to_str().unwrap()]);
-    assert!(
-        r.code == 1 && r.stderr.contains("not UTF-8"),
-        "{}",
-        r.stderr
-    );
-
-    run(&d, &["note", "utf8 probe second memory"]);
-    run(&d, &["nap", "0-1", "both utf8 probes"]);
-    rewrite(&d, &seg_path(&level(2), 0), |b| {
-        b[..16].copy_from_slice(b"\xff\xfe corrupt bytes")
-    });
-    for args in [&["show", "0-1"][..], &["grep", "-t", "probe"]] {
-        let r = run(&d, args);
-        assert!(
-            r.code == 1 && r.stderr.contains("forget 0-1"),
-            "{args:?}: {}{}",
-            r.stdout,
-            r.stderr
-        );
-    }
-}
-
-fn heads(out: &str) -> Vec<&str> {
-    out.lines()
-        .map(|l| match l.starts_with('#') {
-            true => l.split(' ').next().unwrap(),
-            false => l,
-        })
-        .collect()
-}
-
-#[test]
-fn grep_pages_with_context() {
-    let (_tmp, d) = store();
-    for i in 0..10 {
-        let word = if [2, 3, 7].contains(&i) {
-            "hit"
-        } else {
-            "miss"
-        };
-        run(&d, &["note", &format!("{word} {i}")]);
-    }
-    let grep = |args: &[&str]| run(&d, &[&["grep", "hit"], args].concat()).stdout;
-    assert_eq!(
-        heads(&grep(&["-C", "1"])),
-        ["#1", "#2", "#3", "#4", "--", "#6", "#7", "#8", "3 matches."]
-    );
-    assert_eq!(heads(&grep(&[])), ["#2", "#3", "#7", "3 matches."]);
-    assert_eq!(grep(&["-c"]), "3 matches.\n");
-    assert_eq!(grep(&["-c", "--before", "7"]), "2 matches.\n");
-    let out = grep(&["-m", "1", "-C", "1"]);
-    assert_eq!(heads(&out)[..3], ["#6", "#7", "#8"]);
-    assert!(
-        out.ends_with("Newest 1 of 3. Older: ai memory grep 'hit' -m 1 -C 1 --before 7\n"),
-        "{out}"
-    );
-    assert_eq!(
-        heads(&grep(&["-m", "1", "-C", "1", "--before", "7"]))[..2],
-        ["#3", "#4"]
-    );
-    assert_eq!(run(&d, &["grep", "nothing"]).stdout, "No match.\n");
-    assert_eq!(run(&d, &["grep", "nothing", "-c"]).stdout, "No match.\n");
-    assert_eq!(grep(&["--origin", "NOPE00"]), "No match.\n");
-    assert_eq!(grep(&["--repo", "acme/widget"]), "No match.\n");
-
-    run(&d, &["nap", "0-1", "summary with a hit"]);
-    run(&d, &["nap", "2-3", "summary without"]);
-    assert_eq!(heads(&grep(&["-t"]))[..3], ["#0-1", "#2", "#3"]);
-    assert_eq!(heads(&grep(&["-t", "-C", "1"]))[..3], ["#0-1", "--", "#1"]);
-    assert_eq!(grep(&["-t", "-c"]), "4 matches.\n");
-    let r = run(&d, &["grep", "hit", "--before", "x"]);
-    assert!(
-        r.code == 1 && r.stderr.contains("not an id"),
-        "{}",
-        r.stderr
-    );
-}
-
-#[test]
-fn show_prints_every_field() {
-    let (_tmp, d) = store();
-    for i in 0..3 {
-        run(&d, &["note", &format!("shown memory {i}")]);
-    }
     let s = Store::open(&d).unwrap();
-    let origin = s.origin().unwrap();
-    let m = s.snapshot().unwrap().log_get(1).unwrap();
-    let out = run(&d, &["show", "#1"]).stdout;
-    let fields: Vec<_> = out.lines().map(|l| l.split(' ').next().unwrap()).collect();
+    s.append("t", &[msg(Kind::User, long(0))]).unwrap();
+    let model: Arc<dyn Backend> = Arc::new(Model(Arc::new(Fake::summaries())));
+    let late = Arc::new(Mutex::new(None::<String>));
+    let (dir, seen, m2) = (d.clone(), late.clone(), model.clone());
+    let mut rt = runtime(model);
+    rt.before_release = Box::new(move || {
+        let mut seen = seen.lock().unwrap();
+        if seen.is_some() {
+            return;
+        }
+        Store::open(&dir)
+            .unwrap()
+            .append("note", &[msg(Kind::Note, long(1))])
+            .unwrap();
+        *seen = Some(run_rt(&dir, &runtime(m2.clone()), &["nap"]).stdout);
+    });
+    let r = run_rt(&d, &rt, &["nap"]);
     assert_eq!(
-        fields,
-        [
-            "#1", "ts", "origin", "repo", "head", "branch", "agent", "model", "session", "text"
-        ]
+        late.lock().unwrap().as_deref(),
+        Some("A compactor is already running; it will build these too.\n"),
+        "the late nap must find the lock taken"
     );
-    assert!(out.contains(&format!("ts      {}\n", m.ts)));
-    assert!(out.contains(&format!("origin  {origin}\n")));
-    assert!(out.ends_with("text    shown memory 1\n"));
-
-    let r = run(&d, &["show", "0-1"]);
-    assert!(
-        r.code == 1 && r.stderr.contains("not compressed yet"),
-        "{}",
-        r.stderr
-    );
-    run(&d, &["nap", "0-1", "the first two"]);
-    let fp = s.snapshot().unwrap().fingerprint(0, 2).unwrap();
-    let out = run(&d, &["show", "0-1"]).stdout;
-    let fields: Vec<_> = out.lines().map(|l| l.split(' ').next().unwrap()).collect();
-    assert_eq!(
-        fields,
-        [
-            "#0-1", "ts", "origin", "fp", "agent", "model", "session", "text"
-        ]
-    );
-    assert!(out.contains(&format!("fp      {fp}\n")) && out.ends_with("text    the first two\n"));
-    let r = run(&d, &["show", "3"]);
-    assert!(
-        r.code == 1 && r.stderr.contains("beyond the memory"),
-        "{}",
-        r.stderr
-    );
-    assert_eq!(run(&d, &["show", "1-2"]).code, 1);
+    assert_eq!(r.stdout, "Built 3 summaries.\n", "{}", r.stderr);
+    let m = Mem::load(&s.snapshot().unwrap(), VIEW).unwrap();
+    assert!(m.built(Coord::leaf(1)) && m.built(Coord::new(1, 0)));
+    assert_eq!(run(&d, &["nap"]).stdout, "Nothing to build.\n");
 }

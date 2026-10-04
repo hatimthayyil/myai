@@ -1,13 +1,34 @@
-use anyhow::{Context, Result, bail};
-use jiff::{ToSpan, civil::DateTime, tz::TimeZone};
-use sha2::{Digest, Sha256};
+use anyhow::Result;
+use jiff::{civil::DateTime, tz::TimeZone};
 
-pub const REC: usize = 512;
 const TS: &str = "%Y%m%dT%H%M%SZ";
-const LOG: [usize; 8] = [16, 6, 32, 12, 32, 32, 32, 36];
-const TREE: [usize; 6] = [16, 6, 16, 32, 32, 36];
 
-pub const TEXT_MAX: u64 = 305;
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, clap::ValueEnum)]
+pub enum Kind {
+    User,
+    Talk,
+    Tool,
+    Echo,
+    Note,
+}
+
+impl Kind {
+    pub const ALL: [Kind; 5] = [Kind::User, Kind::Talk, Kind::Tool, Kind::Echo, Kind::Note];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Kind::User => "user",
+            Kind::Talk => "talk",
+            Kind::Tool => "tool",
+            Kind::Echo => "echo",
+            Kind::Note => "note",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Kind> {
+        Kind::ALL.into_iter().find(|k| k.name() == s)
+    }
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Place {
@@ -23,161 +44,140 @@ pub struct Who {
     pub session: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Memory {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Message {
     pub ts: String,
-    pub origin: String,
+    pub kind: Kind,
     pub place: Place,
     pub who: Who,
     pub text: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Summary {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Node {
     pub ts: String,
-    pub origin: String,
-    pub fp: String,
-    pub who: Who,
+    pub model: String,
     pub text: String,
 }
 
-fn field(v: &str, width: usize) -> String {
+fn field(v: &str) -> String {
     let v: String = v
         .chars()
-        .map(|c| match c {
-            c if c.is_whitespace() => '_',
-            c if !c.is_ascii() => '?',
-            c => c,
-        })
-        .take(width)
+        .map(|c| if c.is_whitespace() { '_' } else { c })
         .collect();
     if v.is_empty() { "-".into() } else { v }
 }
 
-fn encode(meta: &[&str], widths: &[usize], text: &str) -> Result<Vec<u8>> {
-    let mut b = Vec::with_capacity(REC);
-    for (v, &w) in meta.iter().zip(widths) {
-        b.extend(format!("{:<w$} ", field(v, w)).bytes());
-    }
-    let text = text.replace(['\t', '\r'], " ");
-    let room = REC - 1 - b.len();
-    if text.len() > room {
-        bail!("Too long: {} bytes. The record holds {room}.", text.len());
-    }
-    b.extend(text.bytes());
-    b.resize(REC - 1, b' ');
-    b.push(b'\n');
-    Ok(b)
+/// Newlines as single spaces: how every line shows a text.
+pub fn flat(s: &str) -> String {
+    s.replace("\r\n", " ").replace(['\r', '\n'], " ")
 }
 
-fn decode<const N: usize>(rec: &[u8], widths: [usize; N]) -> Option<([String; N], String)> {
-    let mut at = 0;
-    let mut meta = widths.map(|w| {
-        let s = rec.get(at..at + w);
-        at += w + 1;
-        s
-    });
-    let text = std::str::from_utf8(rec.get(at..REC - 1)?).ok()?;
-    let mut out: [String; N] = std::array::from_fn(|_| String::new());
-    for (o, m) in out.iter_mut().zip(meta.iter_mut()) {
-        *o = std::str::from_utf8(m.take()?).ok()?.trim_end().into();
-    }
-    Some((out, text.trim_end().into()))
+fn date(ts: &str) -> String {
+    format!("{}-{}-{}", &ts[..4], &ts[4..6], &ts[6..8])
 }
 
-impl Memory {
-    pub fn encode(&self) -> Result<Vec<u8>> {
+fn time(ts: &str) -> String {
+    format!("{}:{}", &ts[9..11], &ts[11..13])
+}
+
+fn valid_ts(ts: &str) -> bool {
+    DateTime::strptime(TS, ts).is_ok()
+}
+
+impl Message {
+    pub fn new(kind: Kind, text: &str) -> Message {
+        Message {
+            ts: now(),
+            kind,
+            place: Place::default(),
+            who: Who::default(),
+            text: text.into(),
+        }
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
         let (p, w) = (&self.place, &self.who);
-        encode(
-            &[
-                &self.ts,
-                &self.origin,
-                &p.repo,
-                &p.head,
-                &p.branch,
-                &w.agent,
-                &w.model,
-                &w.session,
-            ],
-            &LOG,
-            &self.text,
-        )
+        let head = [
+            self.ts.as_str(),
+            self.kind.name(),
+            &p.repo,
+            &p.head,
+            &p.branch,
+            &w.agent,
+            &w.model,
+            &w.session,
+        ]
+        .map(field)
+        .join(" ");
+        format!("{head}\n{}", self.text).into_bytes()
     }
 
-    pub fn decode(rec: &[u8]) -> Result<Memory> {
-        let ([ts, origin, repo, head, branch, agent, model, session], text) = decode(rec, LOG)
-            .filter(|(m, _)| m[0].len() == 16 && m[0].is_ascii())
-            .context("A log record is corrupt.")?;
-        Ok(Memory {
-            ts,
-            origin,
-            place: Place { repo, head, branch },
-            who: Who {
-                agent,
-                model,
-                session,
+    pub fn decode(b: &[u8]) -> Result<Message> {
+        let corrupt = || anyhow::anyhow!("A message is corrupt.");
+        let s = std::str::from_utf8(b).map_err(|_| corrupt())?;
+        let (head, text) = s.split_once('\n').ok_or_else(corrupt)?;
+        let f: Vec<&str> = head.split(' ').collect();
+        let [ts, kind, repo, hd, branch, agent, model, session] = f[..] else {
+            return Err(corrupt());
+        };
+        if !valid_ts(ts) {
+            return Err(corrupt());
+        }
+        Ok(Message {
+            ts: ts.into(),
+            kind: Kind::parse(kind).ok_or_else(corrupt)?,
+            place: Place {
+                repo: repo.into(),
+                head: hd.into(),
+                branch: branch.into(),
             },
-            text,
+            who: Who {
+                agent: agent.into(),
+                model: model.into(),
+                session: session.into(),
+            },
+            text: text.into(),
         })
     }
 
-    pub fn key(&self) -> String {
-        format!("{} {}", self.ts, self.origin)
+    /// `kind: text`, the message as the tree sees it.
+    pub fn label(&self) -> String {
+        format!("{}: {}", self.kind.name(), self.text)
     }
 
     pub fn date(&self) -> String {
-        let t = &self.ts;
-        format!("{}-{}-{}", &t[..4], &t[4..6], &t[6..8])
+        date(&self.ts)
     }
 
-    pub fn line(&self, pos: u64) -> String {
-        format!("#{pos} {} {}", self.date(), self.text)
-    }
-
-    pub fn detail(&self, pos: u64) -> String {
-        let t = &self.ts;
-        format!(
-            "#{pos} {} {}:{} {} {} {}",
-            self.date(),
-            &t[9..11],
-            &t[11..13],
-            self.origin,
-            self.place.repo,
-            self.text
-        )
+    /// `<date> <hh:mm> <repo>`, UTC.
+    pub fn stamp(&self) -> String {
+        format!("{} {} {}", date(&self.ts), time(&self.ts), self.place.repo)
     }
 }
 
-impl Summary {
-    pub fn encode(&self) -> Result<Vec<u8>> {
-        let w = &self.who;
-        encode(
-            &[
-                &self.ts,
-                &self.origin,
-                &self.fp,
-                &w.agent,
-                &w.model,
-                &w.session,
-            ],
-            &TREE,
-            &self.text,
+impl Node {
+    pub fn encode(&self) -> String {
+        format!(
+            "{} {} {}",
+            field(&self.ts),
+            field(&self.model),
+            flat(&self.text)
         )
     }
 
-    pub fn decode(rec: &[u8]) -> Option<Summary> {
-        let ([ts, origin, fp, agent, model, session], text) = decode(rec, TREE)?;
-        Some(Summary {
-            ts,
-            origin,
-            fp,
-            who: Who {
-                agent,
-                model,
-                session,
-            },
-            text,
+    pub fn decode(line: &str) -> Option<Node> {
+        let mut f = line.splitn(3, ' ');
+        let (ts, model, text) = (f.next()?, f.next()?, f.next()?);
+        (valid_ts(ts) && !text.is_empty()).then(|| Node {
+            ts: ts.into(),
+            model: model.into(),
+            text: text.into(),
         })
+    }
+
+    pub fn date(&self) -> String {
+        format!("{} {}", date(&self.ts), time(&self.ts))
     }
 }
 
@@ -189,57 +189,18 @@ fn ts(dt: DateTime) -> String {
     dt.strftime(TS).to_string()
 }
 
-fn parse_ts(t: &str) -> Result<DateTime> {
-    DateTime::strptime(TS, t).with_context(|| format!("'{t}' is not a timestamp."))
-}
-
 pub fn midnight(date: jiff::civil::Date) -> String {
     ts(date.to_datetime(jiff::civil::Time::midnight()))
-}
-
-pub fn later(t: &str, span: jiff::Span) -> Result<String> {
-    Ok(ts(parse_ts(t)?.checked_add(span)?))
-}
-
-/// The timestamp a new memory wanting `want` gets after `tail`, keeping keys strictly increasing.
-pub fn next_ts(want: &str, tail: Option<(&str, &str)>, origin: &str) -> Result<String> {
-    let Some((tail_ts, tail_origin)) = tail else {
-        return Ok(want.into());
-    };
-    let t = want.max(tail_ts);
-    if (t, origin) <= (tail_ts, tail_origin) {
-        return later(tail_ts, 1.second());
-    }
-    Ok(t.into())
-}
-
-pub fn fingerprint<'a>(keys: impl IntoIterator<Item = &'a str>) -> String {
-    let mut h = Sha256::new();
-    for k in keys {
-        h.update(k.as_bytes());
-        h.update(b"\n");
-    }
-    h.finalize()[..8]
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
-}
-
-pub fn crockford(bits: u32, len: usize) -> String {
-    const ABC: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-    (0..len)
-        .map(|i| ABC[(bits >> (5 * i) & 31) as usize] as char)
-        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn memory() -> Memory {
-        Memory {
+    fn message() -> Message {
+        Message {
             ts: "20261003T142233Z".into(),
-            origin: "7KQ2ZD".into(),
+            kind: Kind::Echo,
             place: Place {
                 repo: "acme/widget".into(),
                 head: "0123456789ab".into(),
@@ -250,100 +211,42 @@ mod tests {
                 model: "".into(),
                 session: "ünï".into(),
             },
-            text: "a memory\twith a tab".into(),
+            text: "line one\nline two\n".into(),
         }
     }
 
     #[test]
-    fn layout() {
-        let b = memory().encode().unwrap();
-        assert_eq!(b.len(), REC);
-        assert_eq!(&b[..17], b"20261003T142233Z ");
-        assert_eq!(&b[17..24], b"7KQ2ZD ");
-        assert_eq!(&b[24..35], b"acme/widget");
-        assert_eq!(&b[57..70], b"0123456789ab ");
-        assert_eq!(b[206], b'a');
-        assert_eq!(b[REC - 1], b'\n');
-    }
-
-    #[test]
-    fn round_trip() {
-        let m = memory();
-        let back = Memory::decode(&m.encode().unwrap()).unwrap();
+    fn messages_round_trip() {
+        let m = message();
+        let b = m.encode();
+        assert!(b.starts_with(b"20261003T142233Z echo acme/widget 0123456789ab feature/a_b "));
+        let back = Message::decode(&b).unwrap();
         assert_eq!(back.place.branch, "feature/a_b");
         assert_eq!(back.who.model, "-");
-        assert_eq!(back.who.session, "?n?");
-        assert_eq!(back.text, "a memory with a tab");
-        assert_eq!(back.ts, m.ts);
-        assert_eq!(back.line(7), "#7 2026-10-03 a memory with a tab");
-        assert_eq!(
-            back.detail(7),
-            "#7 2026-10-03 14:22 7KQ2ZD acme/widget a memory with a tab"
-        );
-        assert_eq!(Memory::decode(&back.encode().unwrap()).unwrap(), back);
-        let fits = |n: u64| {
-            Memory {
-                text: "x".repeat(n as usize),
-                ..memory()
-            }
-            .encode()
-            .is_ok()
-        };
-        assert!(fits(TEXT_MAX) && !fits(TEXT_MAX + 1));
-
-        let s = Summary {
-            ts: m.ts.clone(),
-            origin: m.origin.clone(),
-            fp: fingerprint([m.key().as_str()]),
-            who: m.who.clone(),
-            text: "x".repeat(367),
-        };
-        let back = Summary::decode(&s.encode().unwrap()).unwrap();
-        assert_eq!((back.fp.len(), back.text.len()), (16, 367));
-        assert!(
-            Summary {
-                text: "x".repeat(368),
-                ..s
-            }
-            .encode()
-            .is_err()
-        );
-        assert!(Memory::decode(&[0xff; REC]).is_err());
-        assert!(Memory::decode(&[b' '; REC]).is_err());
-        let long = Memory {
-            place: Place {
-                branch: "b".repeat(40),
-                ..Place::default()
-            },
-            ..memory()
-        };
-        let back = Memory::decode(&long.encode().unwrap()).unwrap();
-        assert_eq!(back.place.branch, "b".repeat(32));
+        assert_eq!(back.who.session, "ünï");
+        assert_eq!(back.text, m.text);
+        assert_eq!(back.label(), "echo: line one\nline two\n");
+        assert_eq!(back.stamp(), "2026-10-03 14:22 acme/widget");
+        assert_eq!(Message::decode(&back.encode()).unwrap(), back);
+        assert!(Message::decode(b"garbage").is_err());
+        assert!(Message::decode(b"20261003T142233Z chat - - - - - -\nx").is_err());
+        assert!(Message::decode(&[0xff, b'\n']).is_err());
     }
 
     #[test]
-    fn keys_only_grow() {
-        let (a, b) = ("20260101T000000Z", "20260101T000005Z");
-        assert_eq!(next_ts(a, None, "M").unwrap(), a);
-        assert_eq!(next_ts(b, Some((a, "M")), "M").unwrap(), b);
-        assert_eq!(next_ts(a, Some((b, "M")), "M").unwrap(), "20260101T000006Z");
-        assert_eq!(next_ts(a, Some((a, "M")), "M").unwrap(), "20260101T000001Z");
-        assert_eq!(next_ts(a, Some((a, "A")), "M").unwrap(), a);
-        assert_eq!(next_ts(a, Some((a, "Z")), "M").unwrap(), "20260101T000001Z");
-        assert_eq!(
-            next_ts(a, Some(("20261231T235959Z", "M")), "M").unwrap(),
-            "20270101T000000Z"
-        );
-    }
-
-    #[test]
-    fn fingerprints_and_origins() {
-        let fp = fingerprint(["20260101T000000Z AAAAAA"]);
-        assert_eq!(fp.len(), 16);
-        assert_ne!(fp, fingerprint(["20260101T000000Z AAAAAB"]));
-        assert_eq!(fingerprint(std::iter::empty()), "e3b0c44298fc1c14");
-        assert_eq!(crockford(0, 6), "000000");
-        assert_eq!(crockford(u32::MAX, 6), "ZZZZZZ");
-        assert_eq!(crockford(1 | 31 << 5, 6), "1Z0000");
+    fn nodes_are_one_line() {
+        let n = Node {
+            ts: "20261003T142233Z".into(),
+            model: "".into(),
+            text: "a\nb\r\nc".into(),
+        };
+        let line = n.encode();
+        assert_eq!(line, "20261003T142233Z - a b c");
+        let back = Node::decode(&line).unwrap();
+        assert_eq!((back.model.as_str(), back.text.as_str()), ("-", "a b c"));
+        assert!(Node::decode("").is_none());
+        assert!(Node::decode("20261003T142233Z -").is_none());
+        assert_eq!(Kind::parse("note"), Some(Kind::Note));
+        assert_eq!(Kind::parse("work"), None);
     }
 }

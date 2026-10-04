@@ -1,28 +1,30 @@
 use std::{
     fs,
     io::{self, Write},
+    os::unix::process::CommandExt,
     path::{Path, PathBuf},
-    process::ExitCode,
-    time::{Duration, Instant},
+    process::{self, ExitCode, Stdio},
+    sync::Arc,
 };
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use jiff::ToSpan;
 
 use crate::{
+    backend::Backend,
+    claude::ClaudeCode,
+    compact::{Compactor, Options},
     config::Knob,
-    cover::{Block, cover},
     grep::{Grep, grep},
-    nap::{RAW_MAX, blank, next_nap, pending, pending_count},
     prov,
-    record::{Memory, later, midnight, now},
-    store::{AtPath, ME, Put, Snapshot, Store, pretty},
-    sync::{Report, remote, sync},
+    record::{Kind, Message, midnight},
+    store::{AtPath, ME, Snapshot, Store, pretty},
+    tree::{Coord, NODE},
+    view::{Mem, VIEW},
+    zoom::zoom,
 };
 
-const WAKE_SYNC: Duration = Duration::from_secs(3);
-const ZOOM_LINES: usize = 64;
+const NOTE_MAX: usize = NODE - "note: ".len();
 
 const TEMPLATE: &str = "\
 ## Memory
@@ -48,20 +50,23 @@ learn about their life (even indirectly), any event of lasting effect.
 
 Do not register redundant memories.
 
-If `{memo} note` asks a compression: do it before your next action.
-
 Never edit or delete anything under `{data}`: the tool manages it.
 
-### When you need an old memory: search, or navigate
+### Reading it: the view, zoom, grep
 
-`{memo} grep <regex>` searches every memory, word for word; `-t` adds
-the summaries, `--help` lists the filters.
+`wake` prints the view: the whole memory, oldest first, as one-line
+summaries. Each line is `id+n|text`, the n messages from id on. A short
+message is its own line, word for word; the older the messages, the more
+a line covers. Items are tagged with their kind: user, talk, tool, echo
+(a chat with the user: their words, the agent's replies, its tool calls
+and their results) or note (what sessions like this one noted).
 
-Your memories also form a binary tree: #0-1, #2-3 ... exist as one-line
-summaries, pairs of those as #0-3, and so on -- every `#a-b` line wake
-prints is one node of it. `{memo} zoom <a-b>` opens a node three levels
-deep (`--depth 1`-`6`); small nodes open to the raw memories.
-`{memo} show <id>` prints where one memory or summary came from.
+`{memo} zoom <id+n>` opens a line into the two lines of n/2 it was made
+from; `{memo} zoom <id>+1` gives message id in full. Zoom whenever a line
+only mentions something you need, before you act, guess or ask.
+`{memo} grep <regex>` searches every message, word for word; `-t` adds
+the summaries, `--help` lists the filters. `{memo} show <id+n>` prints
+where a message or summary came from.
 
 ### If you're a subagent: skip everything above
 
@@ -85,50 +90,80 @@ pub struct Cli {
 enum Command {
     #[command(about = "create this memory; print the setup block.")]
     Init,
-    #[command(about = "read your memory. Run first, every session.")]
-    Wake { part: Option<u64>, t: Option<u64> },
+    #[command(about = "read your memory: print the view. Run first, every session.")]
+    Wake {
+        part: Option<u64>,
+        #[arg(help = "the commit a multi-part read is pinned to, as printed")]
+        commit: Option<String>,
+    },
     #[command(about = "record one memory: one short line.")]
     Note {
         #[arg(allow_hyphen_values = true)]
         text: String,
     },
-    #[command(about = "do the pending compressions.")]
-    Nap {
-        #[arg(requires = "text")]
-        id: Option<String>,
-        #[arg(allow_hyphen_values = true)]
-        text: Option<String>,
-    },
-    #[command(about = "search every memory ever recorded, newest page first.")]
+    #[command(about = "build every summary that can be built now, with Claude Code.")]
+    Nap,
+    #[command(about = "search every message ever recorded, newest page first.")]
     Grep(Grep),
-    #[command(about = "open a tree node, a few levels down.")]
+    #[command(about = "open a line of the view into the two lines under it.")]
     Zoom {
-        #[arg(help = "a printed id: 16-31, or one memory's 7")]
+        #[arg(help = "a line's id+n, as printed: 2184+8, or 7+1 for message 7")]
         id: String,
-        #[arg(
-            long,
-            default_value_t = 3,
-            value_parser = clap::value_parser!(u8).range(1..=6),
-            help = "levels to open"
-        )]
-        depth: u8,
     },
-    #[command(about = "show where one memory or summary came from.")]
+    #[command(about = "show where one message or summary came from.")]
     Show {
-        #[arg(help = "a printed id: 16-31, or one memory's 7")]
+        #[arg(help = "a line's id+n, as printed: 2184+8, or 7+1 for message 7")]
         id: String,
     },
-    #[command(about = "drop a bad summary; nap rebuilds it.")]
-    Forget { id: String },
     #[command(about = "show this memory's sizes, or change one.")]
     Config {
         #[arg(value_name = "NAME=VALUE")]
         sets: Vec<String>,
     },
-    #[command(about = "exchange memories with this memory's git remote.")]
-    Sync,
-    #[command(about = "bulk-load dated memories (bootstrap only).")]
+    #[command(about = "bulk-load dated notes (bootstrap only).")]
     Import { file: PathBuf },
+}
+
+/// How commands reach the compactor's model; tests swap in their own.
+pub struct Runtime {
+    pub backend: Box<dyn Fn() -> Result<Arc<dyn Backend>>>,
+    pub opts: Options,
+    /// Whether `note` starts a background `nap`.
+    pub nap_on_note: bool,
+    /// Called by `nap` when a round is done, while it still holds the compactor lock.
+    pub before_release: Box<dyn Fn()>,
+}
+
+impl Default for Runtime {
+    fn default() -> Runtime {
+        Runtime {
+            backend: Box::new(|| Ok(Arc::new(ClaudeCode::compactor()?))),
+            opts: Options::default(),
+            nap_on_note: std::env::var_os("AI_MEMORY_NAP").is_none_or(|v| v != "0"),
+            before_release: Box::new(|| {}),
+        }
+    }
+}
+
+/// Starts `ai memory nap` on `dir`, detached, its output appended to `nap.log` there.
+fn spawn_nap(dir: &Path) -> Result<()> {
+    let exe = std::env::current_exe().context("Cannot find this program to start a nap.")?;
+    let log = dir.join("nap.log");
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log)
+        .at(&log)?;
+    process::Command::new(exe)
+        .args(["memory", "nap"])
+        .env("AI_MEMORY_DIR", dir)
+        .stdin(Stdio::null())
+        .stdout(file.try_clone().at(&log)?)
+        .stderr(file)
+        .process_group(0)
+        .spawn()
+        .context("Cannot start a nap.")?;
+    Ok(())
 }
 
 /// `$AI_MEMORY_DIR`, else `~/.ai/memory`.
@@ -151,26 +186,23 @@ impl Cli {
     }
 
     pub fn run(self, dir: &Path, out: &mut dyn Write) -> Result<ExitCode> {
+        self.run_with(dir, out, &Runtime::default())
+    }
+
+    pub fn run_with(self, dir: &Path, out: &mut dyn Write, rt: &Runtime) -> Result<ExitCode> {
         if let Command::Init = self.command {
             return init(dir, out);
         }
         let s = Store::open(dir)?;
         match self.command {
             Command::Init => unreachable!(),
-            Command::Wake { part, t } => {
-                if t.is_none() {
-                    wake_sync(&s, out)?;
-                }
-                wake(&s.snapshot()?, out, part.unwrap_or(1), t)
-            }
-            Command::Note { text } => note(&s, out, &text),
-            Command::Nap { id, text } => nap(&s, out, id.as_deref().zip(text.as_deref())),
+            Command::Wake { part, commit } => wake(&s, out, part.unwrap_or(1), commit.as_deref()),
+            Command::Note { text } => note(&s, out, &text, rt),
+            Command::Nap => nap(&s, out, rt),
             Command::Grep(g) => grep(&s.snapshot()?, out, &g),
-            Command::Zoom { id, depth } => zoom(&s.snapshot()?, out, &id, depth.into()),
+            Command::Zoom { id } => zoom_cmd(&s.snapshot()?, out, &id),
             Command::Show { id } => show(&s.snapshot()?, out, &id),
-            Command::Forget { id } => forget(&s, out, &id),
             Command::Config { sets } => config(&s, out, &sets),
-            Command::Sync => sync_cmd(&s, out),
             Command::Import { file } => import(&s, out, &file),
         }
     }
@@ -194,56 +226,15 @@ pub fn plural(n: u64, word: &str) -> String {
     format!("{n} {word}s")
 }
 
-/// A printed id, `#` optional: a position `7` is `[7, 8)`, a block `16-31` is `[16, 32)`.
-pub fn span(s: &str) -> Result<Block> {
-    let digits = |p: &str| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit());
-    let id = s.strip_prefix('#').unwrap_or(s);
-    let parsed = Some(id.split_once('-').unwrap_or((id, id)))
-        .filter(|(a, b)| digits(a) && digits(b))
-        .and_then(|(a, b)| {
-            Some((
-                a.parse::<u64>().ok()?,
-                b.parse::<u64>().ok()?.checked_add(1)?,
-            ))
-        });
-    let Some((lo, hi)) = parsed else {
-        bail!("'{s}' is not an id. Copy it from the prompt.");
+/// A printed `id+n` (a bare `id` is `id+1`) that names a line within `t` messages.
+pub fn line_id(s: &str, t: u64) -> Result<Coord> {
+    let Some((id, n)) = Coord::parse(s) else {
+        bail!("'{s}' is not an id+n. Copy one from the view, like 2184+8.");
     };
-    let n = hi.saturating_sub(lo);
-    if n == 0 || !n.is_power_of_two() || lo % n != 0 {
-        bail!("{s} is not a block. Copy the id printed by wake, like 16-31.");
-    }
-    Ok((lo, hi))
+    Coord::at(id, n, t).with_context(|| format!("No line {id}+{n}."))
 }
 
-fn block_id(s: &str) -> Result<Block> {
-    let b = span(s)?;
-    if b.1 - b.0 < 2 {
-        bail!("{s} is not a block. Copy the id printed by wake, like 16-31.");
-    }
-    Ok(b)
-}
-
-pub fn name((lo, hi): Block) -> String {
-    match hi - lo {
-        1 => lo.to_string(),
-        _ => format!("{lo}-{}", hi - 1),
-    }
-}
-
-fn within(s: &Snapshot, (lo, hi): Block) -> Result<u64> {
-    let t = s.log_len()?;
-    if lo >= t {
-        bail!(
-            "#{} is beyond the memory: it holds {}. Run: {ME} wake",
-            name((lo, hi)),
-            plural(t, "memory")
-        );
-    }
-    Ok(t)
-}
-
-fn check(text: &str, limit: u64) -> Result<&str> {
+fn check(text: &str, limit: usize) -> Result<&str> {
     let text = text.trim();
     if text.is_empty() {
         bail!("Empty. A memory is one line of text.");
@@ -254,7 +245,7 @@ fn check(text: &str, limit: u64) -> Result<&str> {
             text.matches('\n').count() + 1
         );
     }
-    let n = text.len() as u64;
+    let n = text.len();
     if n > limit {
         bail!(
             "Too long: {n} bytes, limit {limit}. Accented characters cost 2 bytes. Compress it further."
@@ -287,7 +278,7 @@ fn init(dir: &Path, out: &mut dyn Write) -> Result<ExitCode> {
         writeln!(out, "Created {at}: your memory.")?;
     } else {
         let n = s.snapshot()?.log_len()?;
-        writeln!(out, "Found {at}: {}.", plural(n, "memory"))?;
+        writeln!(out, "Found {at}: {}.", plural(n, "message"))?;
     }
     writeln!(
         out,
@@ -300,58 +291,33 @@ fn init(dir: &Path, out: &mut dyn Write) -> Result<ExitCode> {
     let block = TEMPLATE
         .replace("{memo}", ME)
         .replace("{data}", &at)
-        .replace("{chars}", &s.cfg.get(Knob::EntryChars).to_string());
+        .replace("{chars}", &NOTE_MAX.to_string());
     writeln!(out, "{block}")?;
     Ok(ExitCode::SUCCESS)
 }
 
-fn wake(s: &Snapshot, out: &mut dyn Write, k: u64, t: Option<u64>) -> Result<ExitCode> {
-    let now = s.log_len()?;
-    let t = match t {
-        Some(t) if t > now => bail!(
-            "T={t}, but the log holds {}. Run: {ME} wake",
-            plural(now, "memory")
-        ),
-        Some(t) => t,
-        None => now,
+fn wake(s: &Store, out: &mut dyn Write, k: u64, commit: Option<&str>) -> Result<ExitCode> {
+    let snap = match commit {
+        Some(c) => s.at(Some(s.commit_id(c)?))?,
+        None => s.snapshot()?,
     };
-    if t == 0 {
+    let t = snap.log_len()?;
+    let Some(pin) = snap.commit().filter(|_| t > 0) else {
         writeln!(
             out,
             "No memories yet. Record the first with: {ME} note \"<one line>\""
         )?;
         writeln!(out, "You are awake.")?;
         return Ok(ExitCode::SUCCESS);
-    }
-    let mut lines = Vec::new();
-    for (lo, hi) in cover(t, s.cfg().get(Knob::WakeLines)) {
-        if hi - lo == 1 {
-            lines.push(s.log_get(lo)?.line(lo));
-            continue;
-        }
-        let mut sum = s.tree_get(lo, hi)?;
-        if sum.is_none() {
-            if let Some(nap) = next_nap(s, t)? {
-                writeln!(
-                    out,
-                    "Cannot wake: the memory context needs #{lo}-{}, which is not compressed yet.\n\
-                     Do the {} below, then run {ME} wake again.\n\n{nap}",
-                    hi - 1,
-                    plural(pending_count(s, t)?, "compression"),
-                )?;
-                return Ok(ExitCode::FAILURE);
-            }
-            sum = s.tree_get(lo, hi)?;
-        }
-        let Some(sum) = sum else {
-            bail!(blank(lo, hi));
-        };
-        lines.push(format!("#{lo}-{} {}", hi - 1, sum.text));
-    }
+    };
+    let mem = Mem::load(&snap, VIEW)?;
+    let mut lines = vec!["<chat>".to_string()];
+    lines.extend(mem.lines());
+    lines.push("</chat>".into());
     let parts = paginate(
         lines,
-        s.cfg().get(Knob::PartLines),
-        s.cfg().get(Knob::PartChars),
+        s.cfg.get(Knob::PartLines),
+        s.cfg.get(Knob::PartChars),
     );
     let n = parts.len() as u64;
     if !(1..=n).contains(&k) {
@@ -364,88 +330,68 @@ fn wake(s: &Snapshot, out: &mut dyn Write, k: u64, t: Option<u64>) -> Result<Exi
         writeln!(
             out,
             "Your memory, part {k} of {n}, oldest first ({}).",
-            plural(t, "memory")
+            plural(t, "message")
         )?;
     }
     writeln!(out, "{}", parts[k as usize - 1].join("\n"))?;
     if k < n {
-        writeln!(out, "Not awake yet. Run: {ME} wake {} {t}", k + 1)?;
+        writeln!(out, "Not awake yet. Run: {ME} wake {} {pin}", k + 1)?;
     } else {
         writeln!(out, "You are awake.")?;
-        if let Some(nap) = next_nap(s, t)? {
-            writeln!(out, "\n{nap}")?;
-        }
     }
     Ok(ExitCode::SUCCESS)
 }
 
-fn note(s: &Store, out: &mut dyn Write, text: &str) -> Result<ExitCode> {
-    let text = check(text, s.cfg.get(Knob::EntryChars))?;
+fn note(s: &Store, out: &mut dyn Write, text: &str, rt: &Runtime) -> Result<ExitCode> {
+    let text = check(text, NOTE_MAX)?;
     let cwd = std::env::current_dir().context("Cannot read the current directory.")?;
-    let m = Memory {
-        ts: now(),
+    let m = Message {
         place: prov::place(&cwd),
         who: prov::env_who(),
-        text: text.into(),
-        ..Memory::default()
+        ..Message::new(Kind::Note, text)
     };
-    let (i, snap) = s.log_append("note", &[m])?;
-    writeln!(out, "Saved as #{i}.")?;
-    let ts = snap.log_get(i)?.ts;
-    if ts > later(&now(), 1.day())? {
-        writeln!(
-            out,
-            "Warning: dated {ts}, over a day ahead of this clock. Check the clocks of every machine."
-        )?;
-    }
-    if let Some(nap) = next_nap(&snap, i + 1)? {
-        writeln!(out, "\n{nap}")?;
+    let (i, _, _) = s.append("note", &[m])?;
+    writeln!(out, "Saved as {i}+1.")?;
+    if rt.nap_on_note && pending(s)? {
+        spawn_nap(s.dir())?;
     }
     Ok(ExitCode::SUCCESS)
 }
 
-fn nap(s: &Store, out: &mut dyn Write, given: Option<(&str, &str)>) -> Result<ExitCode> {
-    let mut snap = s.snapshot()?;
-    let t = snap.log_len()?;
-    if let Some((given_id, text)) = given {
-        let (id, fp) = given_id.split_once('@').unwrap_or((given_id, ""));
-        let fp = &fp.to_ascii_lowercase();
-        if !fp.bytes().all(|b| b.is_ascii_hexdigit()) || given_id.ends_with('@') {
-            bail!("'{given_id}' is not a block id. Copy it from the prompt.");
-        }
-        let (lo, hi) = block_id(id)?;
-        let changed = || anyhow::anyhow!("{id}: block changed by a sync. Run: {ME} nap");
-        if hi <= t && !snap.fingerprint(lo, hi)?.starts_with(fp) {
-            return Err(changed());
-        }
-        let Some(&next) = pending(&snap, t, Some(1))?.first() else {
-            writeln!(out, "Nothing left to compress.")?;
+/// The compactor's lock is taken: another nap or chat is building, and will see the new messages.
+const BUSY: &str = "A compactor is already running; it will build these too.";
+
+/// Whether a node can be built now on the latest snapshot.
+fn pending(s: &Store) -> Result<bool> {
+    let mem = Mem::load(&s.snapshot()?, VIEW)?;
+    Ok(!mem.due(|_| false, 1).is_empty())
+}
+
+fn nap(s: &Store, out: &mut dyn Write, rt: &Runtime) -> Result<ExitCode> {
+    let (mut backend, mut built) = (None, 0);
+    while pending(s)? {
+        let model = match &backend {
+            Some(b) => Arc::clone(b),
+            None => backend.insert((rt.backend)()?).clone(),
+        };
+        let Some(mut c) = Compactor::new(s, model, rt.opts)? else {
+            writeln!(out, "{BUSY}")?;
             return Ok(ExitCode::SUCCESS);
         };
-        let last = hi - 1;
-        if (lo, hi) != next {
-            if snap.tree_get(lo, hi)?.is_none() {
-                bail!(
-                    "Wrong block: {id}. Blocks are built in order; the next is {}-{}. Run: {ME} nap",
-                    next.0,
-                    next.1 - 1
-                );
+        let retry = rt.opts.retry.as_secs_f64();
+        c.run(|c| {
+            for r in c.take_reports() {
+                writeln!(out, "Failed {r}. Retrying every {retry} s; Ctrl-C to stop.")?;
             }
-            writeln!(out, "{lo}-{last} is already settled.")?;
-        } else {
-            let text = check(text, s.cfg.get(Knob::EntryChars))?;
-            let (put, after) = s.tree_put((lo, hi), fp, text, &prov::env_who())?;
-            snap = after;
-            match put {
-                Put::Saved => writeln!(out, "{lo}-{last} saved.")?,
-                Put::Moved => writeln!(out, "{lo}-{last} was settled or forgotten meanwhile.")?,
-                Put::Changed => return Err(changed()),
-            }
-        }
+            Ok(())
+        })?;
+        built += c.built();
+        (rt.before_release)();
+        drop(c);
     }
-    match next_nap(&snap, t)? {
-        Some(nap) => writeln!(out, "{}{nap}", if given.is_some() { "\n" } else { "" })?,
-        None => writeln!(out, "Nothing left to compress.")?,
+    match built {
+        0 => writeln!(out, "Nothing to build.")?,
+        n => writeln!(out, "Built {}.", plural(n, "summary"))?,
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -484,127 +430,23 @@ fn config(s: &Store, out: &mut dyn Write, sets: &[String]) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn sync_cmd(s: &Store, out: &mut dyn Write) -> Result<ExitCode> {
-    let Some(r) = remote(s) else {
-        writeln!(
-            out,
-            "No remote: this memory is local only. To sync it, run: git --git-dir {} remote add origin <url>",
-            pretty(s.dir())
-        )?;
-        return Ok(ExitCode::SUCCESS);
-    };
-    report(&sync(s, &r, None)?, &r, true, out)?;
-    Ok(ExitCode::SUCCESS)
-}
-
-fn wake_sync(s: &Store, out: &mut dyn Write) -> Result<()> {
-    let Some(r) = remote(s) else {
-        return Ok(());
-    };
-    match sync(s, &r, Some(Instant::now() + WAKE_SYNC)) {
-        Ok(rep) => report(&rep, &r, false, out),
-        Err(e) => Ok(writeln!(out, "Warning: cannot sync with {r}: {e}")?),
+fn zoom_cmd(s: &Snapshot, out: &mut dyn Write, id: &str) -> Result<ExitCode> {
+    let c = line_id(id, s.log_len()?)?;
+    match zoom(s, c.id(), c.n())? {
+        Some(text) => writeln!(out, "{text}")?,
+        None => bail!("No line {c}."),
     }
-}
-
-fn report(r: &Report, remote: &str, verbose: bool, out: &mut dyn Write) -> Result<()> {
-    if let Some(w) = &r.warning {
-        writeln!(out, "Warning: {w}.")?;
-    }
-    if r.clashes > 0 {
-        writeln!(
-            out,
-            "Warning: {} differed between clones under one key; kept one copy each.",
-            plural(r.clashes, "memory")
-        )?;
-    }
-    if let Some(t) = &r.taken {
-        let mut line = format!("Merged {} from {remote}", plural(t.memories, "memory"));
-        if let Some(p) = t.renumbered {
-            line += &format!("; positions from #{p} renumbered");
-        }
-        if t.redo > 0 {
-            line += &format!("; {} to redo", plural(t.redo, "summary"));
-        }
-        line += ".";
-        if t.redo > 0 && verbose {
-            line += &format!(" Run: {ME} nap");
-        }
-        writeln!(out, "{line}")?;
-    }
-    if verbose && r.pushed {
-        writeln!(out, "Pushed to {remote}.")?;
-    }
-    if verbose && r.warning.is_none() && r.taken.is_none() && !r.pushed {
-        writeln!(out, "Up to date with {remote}.")?;
-    }
-    Ok(())
-}
-
-fn forget(s: &Store, out: &mut dyn Write, id: &str) -> Result<ExitCode> {
-    let (lo, hi) = block_id(id)?;
-    let (gone, _) = s.tree_drop(lo, hi)?;
-    let Some(&(a, b)) = gone.first() else {
-        bail!("No summary at {id}.");
-    };
-    let n = plural(gone.len() as u64, "summary");
-    writeln!(out, "Forgot {n}, from {a}-{} up. Run: {ME} nap", b - 1)?;
-    Ok(ExitCode::SUCCESS)
-}
-
-fn frontier(s: &Snapshot, (lo, hi): Block, t: u64, depth: u32) -> Result<Vec<String>> {
-    let step = match (hi - lo, (hi - lo) >> depth) {
-        (n, _) if n <= RAW_MAX => 1,
-        (_, s) if s <= 2 => 1,
-        (_, s) => s,
-    };
-    let mut lines = Vec::new();
-    for a in (lo..hi.min(t)).step_by(step as usize) {
-        let b = a + step;
-        lines.push(match step {
-            1 => s.log_get(a)?.detail(a),
-            _ => match s.tree_get(a, b)? {
-                Some(sum) => format!("#{} {}", name((a, b)), sum.text),
-                None => format!("#{} not compressed yet", name((a, b))),
-            },
-        });
-    }
-    Ok(lines)
-}
-
-fn zoom(s: &Snapshot, out: &mut dyn Write, id: &str, depth: u32) -> Result<ExitCode> {
-    let b = span(id)?;
-    let t = within(s, b)?;
-    let cap = s.cfg().get(Knob::PartChars);
-    let bytes = |l: &[String]| l.iter().map(|x| x.len() as u64 + 1).sum::<u64>();
-    let fits = |l: &[String]| l.len() <= ZOOM_LINES && bytes(l) <= cap;
-    let lines = frontier(s, b, t, depth)?;
-    if !fits(&lines) {
-        for d in (1..depth).rev() {
-            if fits(&frontier(s, b, t, d)?) {
-                bail!(
-                    "Too large at depth {depth}: {} lines, {} bytes; the cap is {ZOOM_LINES} lines, \
-                     {cap} bytes: use --depth {d}. Run: {ME} zoom {} --depth {d}",
-                    lines.len(),
-                    bytes(&lines),
-                    name(b)
-                );
-            }
-        }
-    }
-    writeln!(out, "{}", lines.join("\n"))?;
     Ok(ExitCode::SUCCESS)
 }
 
 fn show(s: &Snapshot, out: &mut dyn Write, id: &str) -> Result<ExitCode> {
-    let (lo, hi) = span(id)?;
-    within(s, (lo, hi))?;
-    let fields: Vec<(&str, String)> = if hi - lo == 1 {
-        let m = s.log_get(lo)?;
+    let c = line_id(id, s.log_len()?)?;
+    let fields: Vec<(&str, String)> = if c.l == 0 {
+        let m = s.message(c.i)?;
         let (p, w) = (m.place, m.who);
         vec![
             ("ts", m.ts),
-            ("origin", m.origin),
+            ("kind", m.kind.name().into()),
             ("repo", p.repo),
             ("head", p.head),
             ("branch", p.branch),
@@ -614,25 +456,12 @@ fn show(s: &Snapshot, out: &mut dyn Write, id: &str) -> Result<ExitCode> {
             ("text", m.text),
         ]
     } else {
-        let Some(sum) = s.tree_get(lo, hi)? else {
-            bail!(
-                "#{} is not compressed yet. Run: {ME} zoom {}",
-                name((lo, hi)),
-                name((lo, hi))
-            );
+        let Some(n) = s.node(c)? else {
+            bail!("{c} is not summarized yet. Run: {ME} zoom {c}");
         };
-        let w = sum.who;
-        vec![
-            ("ts", sum.ts),
-            ("origin", sum.origin),
-            ("fp", sum.fp),
-            ("agent", w.agent),
-            ("model", w.model),
-            ("session", w.session),
-            ("text", sum.text),
-        ]
+        vec![("ts", n.ts), ("model", n.model), ("text", n.text)]
     };
-    writeln!(out, "#{}", name((lo, hi)))?;
+    writeln!(out, "{c}")?;
     for (k, v) in fields {
         writeln!(out, "{k:<8}{v}")?;
     }
@@ -657,11 +486,10 @@ fn import(s: &Store, out: &mut dyn Write, file: &Path) -> Result<ExitCode> {
             pretty(file)
         );
     };
-    let limit = s.cfg.get(Knob::EntryChars);
     let snap = s.snapshot()?;
     let n = snap.log_len()?;
     let mut last = if n > 0 {
-        snap.log_get(n - 1)?.date()
+        snap.message(n - 1)?.date()
     } else {
         "0000-00-00".into()
     };
@@ -678,34 +506,29 @@ fn import(s: &Store, out: &mut dyn Write, file: &Path) -> Result<ExitCode> {
             bail!("line {i}: {date} is not a real date.");
         };
         if *date < *last {
-            bail!("line {i}: date {date} precedes the previous memory ({last}).");
+            bail!("line {i}: date {date} precedes the previous message ({last}).");
         }
         let text = text.trim();
-        if text.is_empty() || text.len() as u64 > limit {
-            bail!("line {i}: {} bytes, limit {limit}.", text.len());
+        if text.is_empty() {
+            bail!("line {i}: no text.");
         }
         last = date.to_string();
-        items.push(Memory {
+        items.push(Message {
             ts: midnight(day),
-            text: text.into(),
-            ..Memory::default()
+            ..Message::new(Kind::Note, text)
         });
     }
     if items.is_empty() {
-        bail!("{} has no memories.", file.display());
+        bail!("{} has no notes.", file.display());
     }
-    let (base, snap) = s.log_append("import", &items)?;
+    let (base, _, _) = s.append("import", &items)?;
     let k = items.len() as u64;
     writeln!(
         out,
-        "Imported {}, #{base} to #{}.",
-        plural(k, "memory"),
+        "Imported {}, {base}+1 to {}+1.",
+        plural(k, "note"),
         base + k - 1
     )?;
-    let n = pending_count(&snap, snap.log_len()?)?;
-    if n > 0 {
-        writeln!(out, "{} pending. Run: {ME} nap", plural(n, "compression"))?;
-    }
     Ok(ExitCode::SUCCESS)
 }
 
@@ -715,22 +538,20 @@ mod tests {
 
     #[test]
     fn plurals() {
-        assert_eq!(plural(1, "memory"), "1 memory");
+        assert_eq!(plural(1, "message"), "1 message");
         assert_eq!(plural(2, "memory"), "2 memories");
         assert_eq!(plural(5, "match"), "5 matches");
         assert_eq!(plural(0, "part"), "0 parts");
     }
 
     #[test]
-    fn block_ids() {
-        assert_eq!(block_id("16-31").unwrap(), (16, 32));
-        assert_eq!(block_id("#16-31").unwrap(), (16, 32));
-        for bad in ["3-9", "9-3", "4-4", "5-6", "x-1", "1-", "17-32", "7", "#"] {
-            assert!(block_id(bad).is_err(), "{bad}");
+    fn line_ids() {
+        assert_eq!(line_id("16+16", 32).unwrap(), Coord::new(4, 1));
+        assert_eq!(line_id("7", 8).unwrap(), Coord::leaf(7));
+        assert_eq!(line_id("7+1", 8).unwrap(), Coord::leaf(7));
+        for bad in ["16+16", "3+2", "4+3", "x", "#7", "7-8", "31+1"] {
+            assert!(line_id(bad, 31).is_err(), "{bad}");
         }
-        assert_eq!(span("7").unwrap(), (7, 8));
-        assert_eq!(span("#7").unwrap(), (7, 8));
-        assert_eq!((name((7, 8)), name((16, 32))), ("7".into(), "16-31".into()));
     }
 
     #[test]

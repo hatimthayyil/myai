@@ -19,16 +19,16 @@ use gix::{
 };
 
 use crate::{
-    config::{Config, SECTION, SUBSECTION},
-    cover::Block,
-    record::{Memory, REC, Summary, Who, crockford, fingerprint, next_ts, now},
+    config::Config,
+    record::{Message, Node, now},
+    tree::{Coord, free, joined},
 };
 
 pub const ME: &str = "ai memory";
 pub const REF: &str = "refs/ai/memory";
 pub const LOG: &str = "log";
 const SEG: u64 = 256;
-const ORIGIN: &str = "origin";
+const FREE: &str = "-";
 
 /// A path as the user would type it: fold `$HOME` to `~`.
 pub fn pretty(p: &Path) -> String {
@@ -53,16 +53,20 @@ impl<T> AtPath<T> for io::Result<T> {
     }
 }
 
-/// Segment `n` of the level stored under `dir`.
-pub fn seg_path(dir: &str, n: u64) -> String {
+/// Entry `n` under `dir`, fanned out 256 per tree.
+pub fn fan_path(dir: &str, n: u64) -> String {
     format!("{dir}/{:04x}/{:02x}", n >> 8, n & 255)
 }
 
-pub fn level(size: u64) -> String {
-    format!("tree/{size}")
+pub fn level_dir(l: u32) -> String {
+    format!("tree/{l}")
 }
 
-/// New segment blobs by path; an empty one removes the path.
+fn seg_of(c: Coord) -> (String, usize) {
+    (fan_path(&level_dir(c.l), c.i / SEG), (c.i % SEG) as usize)
+}
+
+/// New blobs by path.
 #[derive(Debug, Default)]
 pub struct Changes(BTreeMap<String, Vec<u8>>);
 
@@ -72,12 +76,8 @@ impl Changes {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Put {
-    Saved,
-    Moved,
-    Changed,
-}
+/// Nodes a mutation wrote, with their stored text.
+pub type Built = Vec<(Coord, String)>;
 
 pub struct Store {
     repo: gix::Repository,
@@ -137,36 +137,11 @@ impl Store {
         &self.dir
     }
 
-    /// A value from this memory's resolved git config.
-    pub fn setting(&self, key: &str) -> Option<String> {
-        self.repo
-            .config_snapshot()
-            .string(key)
-            .map(|v| v.to_string())
-            .filter(|v| !v.is_empty())
-    }
-
-    /// The commit `name` points at, if the ref exists.
-    pub fn resolve(&self, name: &str) -> Result<Option<ObjectId>> {
-        Ok(self
-            .repo
-            .try_find_reference(name)?
-            .and_then(|r| r.try_id().map(|id| id.detach())))
-    }
-
     pub fn head(&self) -> Result<Option<ObjectId>> {
-        self.resolve(REF)
-    }
-
-    /// Whether `a` is `b` or one of its ancestors.
-    pub fn is_ancestor(&self, a: ObjectId, b: ObjectId) -> Result<bool> {
         Ok(self
             .repo
-            .rev_walk([a])
-            .with_hidden([b])
-            .all()?
-            .next()
-            .is_none())
+            .try_find_reference(REF)?
+            .and_then(|r| r.try_id().map(|id| id.detach())))
     }
 
     /// The memory as of the latest commit.
@@ -188,6 +163,14 @@ impl Store {
         })
     }
 
+    /// The commit a printed hex id names.
+    pub fn commit_id(&self, hex: &str) -> Result<ObjectId> {
+        let id = ObjectId::from_hex(hex.as_bytes())
+            .ok()
+            .filter(|id| self.repo.find_commit(*id).is_ok());
+        id.with_context(|| format!("'{hex}' is not a commit of this memory. Run: {ME} wake"))
+    }
+
     /// Applies `change` to the latest snapshot as one commit, redoing it until the ref update wins.
     pub fn mutate<R>(
         &self,
@@ -200,37 +183,26 @@ impl Store {
             if ch.0.is_empty() {
                 return Ok((r, base));
             }
-            let commit = self.commit(&base, ch, msg, base.commit)?;
+            let commit = self.commit(&base, ch, msg)?;
             if self.cas(base.commit, commit, msg)? {
                 return Ok((r, self.at(Some(commit))?));
             }
         }
     }
 
-    /// Writes `base` with `ch` applied as a new commit; moves no ref.
-    pub fn commit(
-        &self,
-        base: &Snapshot,
-        Changes(ch): Changes,
-        msg: &str,
-        parents: impl IntoIterator<Item = ObjectId>,
-    ) -> Result<ObjectId> {
+    fn commit(&self, base: &Snapshot, Changes(ch): Changes, msg: &str) -> Result<ObjectId> {
         let mut ed = self.repo.edit_tree(base.tree)?;
         for (p, bytes) in ch {
-            if bytes.is_empty() {
-                ed.remove(&p)?;
-            } else {
-                let id = self.repo.write_blob(bytes)?;
-                ed.upsert(&p, EntryKind::Blob, id)?;
-            }
+            let id = self.repo.write_blob(bytes)?;
+            ed.upsert(&p, EntryKind::Blob, id)?;
         }
         let tree = ed.write()?.detach();
         let me = self.repo.committer().context("No committer.")??;
-        Ok(self.repo.new_commit_as(me, me, msg, tree, parents)?.id)
+        Ok(self.repo.new_commit_as(me, me, msg, tree, base.commit)?.id)
     }
 
     /// Moves the memory from `from` to `to`; false if another writer moved it first.
-    pub fn cas(&self, from: Option<ObjectId>, to: ObjectId, msg: &str) -> Result<bool> {
+    fn cas(&self, from: Option<ObjectId>, to: ObjectId, msg: &str) -> Result<bool> {
         let expected = match from {
             Some(c) => PreviousValue::MustExistAndMatch(Target::Object(c)),
             None => PreviousValue::MustNotExist,
@@ -243,121 +215,147 @@ impl Store {
         }
     }
 
-    fn edit_config<R>(&self, edit: impl FnOnce(&mut gix::config::File) -> Result<R>) -> Result<R> {
+    pub fn save_config(&self, cfg: &Config) -> Result<()> {
         let p = self.dir.join("config");
         let wait = Fail::AfterDurationWithBackoff(Duration::from_secs(3));
         let mut lock = gix::lock::File::acquire_to_update_resource(&p, wait, None)?;
         let mut file =
             gix::config::File::from_path_no_includes(p.clone(), gix::config::Source::Local)?;
-        let r = edit(&mut file)?;
+        cfg.save(&mut file)?;
         file.write_to(&mut lock).at(&p)?;
         lock.commit().map_err(|e| e.error).at(&p)?;
-        Ok(r)
+        Ok(())
     }
 
-    pub fn save_config(&self, cfg: &Config) -> Result<()> {
-        self.edit_config(|f| cfg.save(f))
-    }
-
-    /// This clone's id, created on first use.
-    pub fn origin(&self) -> Result<String> {
-        let key = format!("{SECTION}.{SUBSECTION}.{ORIGIN}");
-        if let Some(o) = self.setting(&key) {
-            return Ok(o);
-        }
-        self.edit_config(|f| {
-            if let Some(o) = f.string_by(SECTION, Some(SUBSECTION.into()), ORIGIN) {
-                return Ok(o.to_string());
-            }
-            let o = crockford(getrandom::u32()?, 6);
-            f.set_raw_value_by(SECTION, Some(SUBSECTION.into()), ORIGIN, o.as_str())?;
-            Ok(o)
-        })
-    }
-
-    /// Appends `items` in order; each `ts` is the wanted time, kept only if it sorts after the tail.
-    pub fn log_append(&self, msg: &str, items: &[Memory]) -> Result<(u64, Snapshot<'_>)> {
-        let origin = self.origin()?;
-        self.mutate(msg, |s| {
-            let base = s.log_len()?;
-            let mut tail = match base {
-                0 => None,
-                n => Some(s.log_get(n - 1)?),
-            };
-            let mut recs = Vec::new();
+    /// Appends `items` in order, with every free node they complete; returns the first new id.
+    pub fn append(&self, msg: &str, items: &[Message]) -> Result<(u64, Built, Snapshot<'_>)> {
+        let ((first, built), snap) = self.mutate(msg, |s| {
+            let mut ed = Edit::new(s)?;
+            let first = ed.t;
             for m in items {
-                let key = tail.as_ref().map(|t| (t.ts.as_str(), t.origin.as_str()));
-                let m = Memory {
-                    ts: next_ts(&m.ts, key, &origin)?,
-                    origin: origin.clone(),
-                    ..m.clone()
-                };
-                recs.push(m.encode()?);
-                tail = Some(m);
+                ed.push(m)?;
             }
-            let mut ch = Changes::default();
-            s.append(LOG, base, recs, &mut ch)?;
-            Ok((base, ch))
-        })
+            let (built, ch) = ed.finish();
+            Ok(((first, built), ch))
+        })?;
+        Ok((first, built, snap))
     }
 
-    /// Writes block `[lo, hi)` if it is the next one at its level and its fingerprint starts with `fp`.
-    pub fn tree_put(
-        &self,
-        (lo, hi): Block,
-        fp: &str,
-        text: &str,
-        who: &Who,
-    ) -> Result<(Put, Snapshot<'_>)> {
-        let (origin, size) = (self.origin()?, hi - lo);
-        self.mutate(&format!("nap {lo}-{}", hi - 1), |s| {
-            let mut ch = Changes::default();
-            if s.level_len(size)? != lo / size {
-                return Ok((Put::Moved, ch));
+    /// Writes node `c` unless it is built, with every free node above it it completes.
+    pub fn put_node(&self, c: Coord, model: &str, text: &str) -> Result<(Built, Snapshot<'_>)> {
+        self.mutate(&format!("node {c}"), |s| {
+            let mut ed = Edit::new(s)?;
+            if c.end() > ed.t {
+                bail!("Node {c} is beyond the log: it holds {} messages.", ed.t);
             }
-            let have = s.fingerprint(lo, hi)?;
-            if !have.starts_with(fp) {
-                return Ok((Put::Changed, ch));
+            if ed.text(c)?.is_none() {
+                ed.put(c, model, text)?;
             }
-            let rec = Summary {
-                ts: now(),
-                origin: origin.clone(),
-                fp: have,
-                who: who.clone(),
-                text: text.into(),
-            };
-            s.append(&level(size), lo / size, [rec.encode()?], &mut ch)?;
-            Ok((Put::Saved, ch))
-        })
-    }
-
-    /// Drops block `[lo, hi)` and every block built from it; returns them.
-    pub fn tree_drop(&self, lo: u64, hi: u64) -> Result<(Vec<Block>, Snapshot<'_>)> {
-        self.mutate(&format!("forget {lo}-{}", hi - 1), |s| {
-            let (mut gone, mut size, mut ch) = (Vec::new(), hi - lo, Changes::default());
-            let t = s.log_len()?;
-            while size <= t {
-                let (k, n) = (lo / size, s.level_len(size)?);
-                if n > k {
-                    gone.extend((k..n).map(|i| (i * size, (i + 1) * size)));
-                    s.truncate(&level(size), k, n, &mut ch)?;
-                }
-                size *= 2;
-            }
-            Ok((gone, ch))
+            Ok(ed.finish())
         })
     }
 }
 
-fn summary((lo, hi): Block, sum: Option<Summary>) -> Result<Option<Summary>> {
-    let Some(sum) = sum else {
-        bail!(
-            "The summary of #{lo}-{} is corrupt. Run: {ME} forget {lo}-{}",
-            hi - 1,
-            hi - 1
-        );
-    };
-    Ok((!sum.text.is_empty()).then_some(sum))
+/// One mutation: new messages and nodes over a snapshot, free nodes completed as they become ready.
+struct Edit<'a, 's> {
+    snap: &'a Snapshot<'s>,
+    t: u64,
+    ch: Changes,
+    segs: BTreeMap<String, Vec<String>>,
+    built: Built,
+}
+
+impl<'a, 's> Edit<'a, 's> {
+    fn new(snap: &'a Snapshot<'s>) -> Result<Self> {
+        Ok(Edit {
+            snap,
+            t: snap.log_len()?,
+            ch: Changes::default(),
+            segs: BTreeMap::new(),
+            built: Vec::new(),
+        })
+    }
+
+    fn seg(&mut self, path: &str) -> Result<&mut Vec<String>> {
+        if !self.segs.contains_key(path) {
+            let lines = split(&self.snap.read(path)?)?;
+            self.segs.insert(path.into(), lines);
+        }
+        Ok(self.segs.get_mut(path).expect("inserted above"))
+    }
+
+    fn text(&mut self, c: Coord) -> Result<Option<String>> {
+        let (path, k) = seg_of(c);
+        let line = self.seg(&path)?.get(k).cloned().unwrap_or_default();
+        Ok(Node::decode(&line).map(|n| n.text))
+    }
+
+    fn put(&mut self, c: Coord, model: &str, text: &str) -> Result<()> {
+        let node = Node {
+            ts: now(),
+            model: model.into(),
+            text: text.into(),
+        };
+        let line = node.encode();
+        let text = Node::decode(&line).context("An empty node.")?.text;
+        let (path, k) = seg_of(c);
+        let seg = self.seg(&path)?;
+        if seg.len() <= k {
+            seg.resize(k + 1, String::new());
+        }
+        seg[k] = line;
+        self.built.push((c, text));
+        self.cascade(c)
+    }
+
+    fn cascade(&mut self, c: Coord) -> Result<()> {
+        let p = c.parent();
+        if p.end() > self.t || self.text(p)?.is_some() {
+            return Ok(());
+        }
+        let [a, b] = p.children();
+        let (Some(a), Some(b)) = (self.text(a)?, self.text(b)?) else {
+            return Ok(());
+        };
+        match free(joined(&a, &b)) {
+            Some(text) => self.put(p, FREE, &text),
+            None => Ok(()),
+        }
+    }
+
+    fn push(&mut self, m: &Message) -> Result<()> {
+        if m.text.is_empty() {
+            bail!("An empty message.");
+        }
+        let i = self.t;
+        self.ch.put(fan_path(LOG, i), m.encode());
+        self.t += 1;
+        match free(crate::record::flat(&m.label())) {
+            Some(text) => self.put(Coord::leaf(i), FREE, &text),
+            None => Ok(()),
+        }
+    }
+
+    fn finish(mut self) -> (Built, Changes) {
+        for (path, lines) in self.segs {
+            if lines.is_empty() {
+                continue;
+            }
+            let mut b = lines.join("\n").into_bytes();
+            b.push(b'\n');
+            self.ch.put(path, b);
+        }
+        (self.built, self.ch)
+    }
+}
+
+fn split(seg: &[u8]) -> Result<Vec<String>> {
+    let s = std::str::from_utf8(seg).map_err(|_| anyhow!("A tree segment is corrupt."))?;
+    let mut lines: Vec<String> = s.split('\n').map(String::from).collect();
+    if lines.last().is_some_and(String::is_empty) {
+        lines.pop();
+    }
+    Ok(lines)
 }
 
 /// The memory as of one commit: every read through it sees the same state.
@@ -377,197 +375,112 @@ impl Snapshot<'_> {
         &self.store.cfg
     }
 
-    pub fn tree(&self) -> ObjectId {
-        self.tree
-    }
-
     fn entry(&self, path: &str) -> Result<Option<ObjectId>> {
         let root = self.store.repo.find_tree(self.tree)?;
         Ok(root.lookup_entry_by_path(path)?.map(|e| e.object_id()))
     }
 
-    fn fetch(&self, path: &str) -> Result<Vec<u8>> {
-        Ok(match self.entry(path)? {
-            Some(id) => self.store.repo.find_blob(id)?.take_data(),
-            None => Vec::new(),
-        })
+    fn fetch(&self, id: ObjectId) -> Result<Vec<u8>> {
+        Ok(self.store.repo.find_blob(id)?.take_data())
     }
 
-    /// The blob at `path`, empty if absent.
+    /// The blob at `path`, empty if absent; cached.
     pub fn read(&self, path: &str) -> Result<Rc<[u8]>> {
         if let Some(b) = self.cache.borrow().get(path) {
             return Ok(b.clone());
         }
-        let b: Rc<[u8]> = self.fetch(path)?.into();
+        let b: Rc<[u8]> = match self.entry(path)? {
+            Some(id) => self.fetch(id)?.into(),
+            None => Rc::from([]),
+        };
         self.cache.borrow_mut().insert(path.into(), b.clone());
         Ok(b)
     }
 
-    fn last(&self, tree: ObjectId) -> Result<Option<(u64, ObjectId)>> {
+    /// A tree's entries by their hex names, in order.
+    fn entries(&self, tree: ObjectId) -> Result<Vec<(u64, ObjectId)>> {
         let t = self.store.repo.find_tree(tree)?;
-        let Some(e) = t
-            .decode()?
+        t.decode()?
             .entries
-            .last()
-            .map(|e| (e.filename.to_string(), e.oid.to_owned()))
-        else {
-            return Ok(None);
-        };
-        let n = u64::from_str_radix(&e.0, 16)
-            .with_context(|| format!("A segment is misnamed: {}.", e.0))?;
-        Ok(Some((n, e.1)))
+            .iter()
+            .map(|e| {
+                let name = e.filename.to_string();
+                let n = u64::from_str_radix(&name, 16)
+                    .with_context(|| format!("An entry is misnamed: {name}."))?;
+                Ok((n, e.oid.to_owned()))
+            })
+            .collect()
     }
 
-    fn count(&self, dir: &str) -> Result<u64> {
+    /// Every blob under the fanned-out `dir`, with its number.
+    fn walk(&self, dir: &str, mut each: impl FnMut(u64, ObjectId) -> Result<()>) -> Result<()> {
         let Some(top) = self.entry(dir)? else {
-            return Ok(0);
+            return Ok(());
         };
-        let Some((hi, sub)) = self.last(top)? else {
-            return Ok(0);
-        };
-        let Some((lo, seg)) = self.last(sub)? else {
-            return Ok(0);
-        };
-        let n = hi << 8 | lo;
-        let size = self.store.repo.find_header(seg)?.size();
-        Ok(n * SEG + size / REC as u64)
-    }
-
-    pub fn log_len(&self) -> Result<u64> {
-        self.count(LOG)
-    }
-
-    /// How many blocks of `size` are built.
-    pub fn level_len(&self, size: u64) -> Result<u64> {
-        self.count(&level(size))
-    }
-
-    fn record<R>(&self, dir: &str, i: u64, decode: impl FnOnce(&[u8]) -> R) -> Result<Option<R>> {
-        let seg = self.read(&seg_path(dir, i / SEG))?;
-        let at = (i % SEG) as usize * REC;
-        Ok(seg.get(at..at + REC).map(decode))
-    }
-
-    pub fn log_get(&self, i: u64) -> Result<Memory> {
-        self.record(LOG, i, Memory::decode)?
-            .with_context(|| format!("Memory #{i} is missing from the log."))?
-    }
-
-    pub fn log_slice(&self, lo: u64, hi: u64) -> Result<Vec<Memory>> {
-        (lo..hi).map(|i| self.log_get(i)).collect()
-    }
-
-    /// The fingerprint of block `[lo, hi)`'s members.
-    pub fn fingerprint(&self, lo: u64, hi: u64) -> Result<String> {
-        let keys: Vec<_> = self.log_slice(lo, hi)?.iter().map(Memory::key).collect();
-        Ok(fingerprint(keys.iter().map(String::as_str)))
-    }
-
-    /// Every record under `dir`, concatenated.
-    pub fn dump(&self, dir: &str) -> Result<Vec<u8>> {
-        let mut all = Vec::new();
-        for seg in 0..self.count(dir)?.div_ceil(SEG) {
-            all.extend(self.fetch(&seg_path(dir, seg))?);
-        }
-        Ok(all)
-    }
-
-    /// Streams records `[0, end)` under `dir`, one segment at a time, without caching.
-    fn scan(
-        &self,
-        dir: &str,
-        end: u64,
-        mut each: impl FnMut(u64, &[u8]) -> Result<()>,
-    ) -> Result<()> {
-        let end = end.min(self.count(dir)?);
-        for seg in 0..end.div_ceil(SEG) {
-            let buf = self.fetch(&seg_path(dir, seg))?;
-            let (recs, _) = buf.as_chunks::<REC>();
-            for (i, rec) in (seg * SEG..end).zip(recs) {
-                each(i, rec)?;
+        for (hi, sub) in self.entries(top)? {
+            for (lo, id) in self.entries(sub)? {
+                each(hi << 8 | lo, id)?;
             }
         }
         Ok(())
     }
 
-    /// Streams memories `[0, end)` with their positions.
-    pub fn log_scan(
-        &self,
-        end: u64,
-        mut each: impl FnMut(u64, Memory) -> Result<()>,
-    ) -> Result<()> {
-        self.scan(LOG, end, |i, rec| each(i, Memory::decode(rec)?))
+    /// How many messages the log holds.
+    pub fn log_len(&self) -> Result<u64> {
+        let Some(top) = self.entry(LOG)? else {
+            return Ok(0);
+        };
+        let Some(&(hi, sub)) = self.entries(top)?.last() else {
+            return Ok(0);
+        };
+        let Some(&(lo, _)) = self.entries(sub)?.last() else {
+            return Ok(0);
+        };
+        Ok((hi << 8 | lo) + 1)
     }
 
-    /// Streams the built summaries of `size` that end by `end`, skipping blank ones.
-    pub fn tree_scan(
-        &self,
-        size: u64,
-        end: u64,
-        mut each: impl FnMut(Block, Summary) -> Result<()>,
-    ) -> Result<()> {
-        self.scan(&level(size), end / size, |k, rec| {
-            let b = (k * size, (k + 1) * size);
-            match summary(b, Summary::decode(rec))? {
-                Some(sum) => each(b, sum),
-                None => Ok(()),
+    pub fn message(&self, i: u64) -> Result<Message> {
+        let id = self
+            .entry(&fan_path(LOG, i))?
+            .with_context(|| format!("Message {i} is missing from the log."))?;
+        Message::decode(&self.fetch(id)?).with_context(|| format!("Message {i}"))
+    }
+
+    /// Streams messages `[0, end)` in order.
+    pub fn scan(&self, end: u64, mut each: impl FnMut(u64, Message) -> Result<()>) -> Result<()> {
+        let mut want = 0;
+        self.walk(LOG, |i, id| {
+            if i >= end {
+                return Ok(());
             }
+            if i != want {
+                bail!("Message {want} is missing from the log.");
+            }
+            want += 1;
+            each(i, Message::decode(&self.fetch(id)?)?)
         })
     }
 
-    /// The summary of block `[lo, hi)`, or `None` if it is not built yet.
-    pub fn tree_get(&self, lo: u64, hi: u64) -> Result<Option<Summary>> {
-        let size = hi - lo;
-        match self.record(&level(size), lo / size, Summary::decode)? {
-            Some(sum) => summary((lo, hi), sum),
-            None => Ok(None),
-        }
+    /// Node `c`, if built.
+    pub fn node(&self, c: Coord) -> Result<Option<Node>> {
+        let (path, k) = seg_of(c);
+        let seg = self.read(&path)?;
+        Ok(split(&seg)?.get(k).and_then(|l| Node::decode(l)))
     }
 
-    fn append(
-        &self,
-        dir: &str,
-        start: u64,
-        recs: impl IntoIterator<Item = Vec<u8>>,
-        ch: &mut Changes,
-    ) -> Result<()> {
-        for (i, rec) in (start..).zip(recs) {
-            let p = seg_path(dir, i / SEG);
-            if !ch.0.contains_key(&p) {
-                let cur = self.read(&p)?;
-                ch.put(p.clone(), cur[..(i % SEG) as usize * REC].to_vec());
+    /// Every node of level `l`, by index; `None` where not built.
+    pub fn level(&self, l: u32) -> Result<Vec<Option<Node>>> {
+        let mut out = Vec::new();
+        self.walk(&level_dir(l), |s, id| {
+            for (k, line) in split(&self.fetch(id)?)?.iter().enumerate() {
+                let i = (s * SEG) as usize + k;
+                if out.len() <= i {
+                    out.resize(i + 1, None);
+                }
+                out[i] = Node::decode(line);
             }
-            ch.0.entry(p).or_default().extend(rec);
-        }
-        Ok(())
-    }
-
-    /// Replaces the records under `dir` from `from` on (of `old` in all) with `recs`.
-    pub fn replace(
-        &self,
-        dir: &str,
-        from: u64,
-        old: u64,
-        recs: impl IntoIterator<Item = Vec<u8>>,
-        ch: &mut Changes,
-    ) -> Result<()> {
-        if from < old {
-            self.truncate(dir, from, old, ch)?;
-        }
-        self.append(dir, from, recs, ch)
-    }
-
-    fn truncate(&self, dir: &str, k: u64, n: u64, ch: &mut Changes) -> Result<()> {
-        for seg in k / SEG..=(n - 1) / SEG {
-            let keep = if seg == k / SEG {
-                (k % SEG) as usize * REC
-            } else {
-                0
-            };
-            let p = seg_path(dir, seg);
-            let cur = self.read(&p)?;
-            ch.put(p, cur[..keep].to_vec());
-        }
-        Ok(())
+            Ok(())
+        })?;
+        Ok(out)
     }
 }

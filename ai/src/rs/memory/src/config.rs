@@ -1,31 +1,20 @@
 use anyhow::{Result, bail};
 use gix::bstr::ByteSlice;
 
-use crate::record::TEXT_MAX;
-
 pub const SECTION: &str = "ai";
 pub const SUBSECTION: &str = "memory";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Knob {
-    WakeLines,
-    EntryChars,
     PartChars,
     PartLines,
 }
 
 impl Knob {
-    pub const ALL: [Knob; 4] = [
-        Knob::WakeLines,
-        Knob::EntryChars,
-        Knob::PartChars,
-        Knob::PartLines,
-    ];
+    pub const ALL: [Knob; 2] = [Knob::PartChars, Knob::PartLines];
 
     pub fn name(self) -> &'static str {
         match self {
-            Knob::WakeLines => "WAKE_LINES",
-            Knob::EntryChars => "ENTRY_CHARS",
             Knob::PartChars => "PART_CHARS",
             Knob::PartLines => "PART_LINES",
         }
@@ -33,8 +22,6 @@ impl Knob {
 
     pub fn key(self) -> &'static str {
         match self {
-            Knob::WakeLines => "wakeLines",
-            Knob::EntryChars => "entryChars",
             Knob::PartChars => "partChars",
             Knob::PartLines => "partLines",
         }
@@ -42,8 +29,6 @@ impl Knob {
 
     pub fn default(self) -> u64 {
         match self {
-            Knob::WakeLines => 96,
-            Knob::EntryChars => 280,
             Knob::PartChars => 20000,
             Knob::PartLines => 500,
         }
@@ -51,8 +36,6 @@ impl Knob {
 
     pub fn what(self) -> &'static str {
         match self {
-            Knob::WakeLines => "the memory context: how many lines wake prints",
-            Knob::EntryChars => "the longest one memory may be, in bytes",
             Knob::PartChars => "output paging: largest part, in bytes",
             Knob::PartLines => "output paging: largest part, in lines",
         }
@@ -67,20 +50,16 @@ impl Knob {
     }
 
     pub fn validate(self, v: &str, label: &str) -> Result<u64> {
-        let n = match v.parse::<u64>() {
-            Ok(n) if n >= 1 && v.bytes().all(|b| b.is_ascii_digit()) => n,
+        match v.parse::<u64>() {
+            Ok(n) if n >= 1 && v.bytes().all(|b| b.is_ascii_digit()) => Ok(n),
             _ => bail!("{label} must be a positive whole number, not '{v}'."),
-        };
-        if self == Knob::EntryChars && n > TEXT_MAX {
-            bail!("{label} is at most {TEXT_MAX}: a memory has to fit the fixed-width records.");
         }
-        Ok(n)
     }
 }
 
 /// The sizes one memory overrides; every other knob follows the tool's default.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Config([Option<u64>; 4]);
+pub struct Config([Option<u64>; 2]);
 
 impl Config {
     pub fn get(&self, k: Knob) -> u64 {

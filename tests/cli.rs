@@ -3,10 +3,11 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
-    time::SystemTime,
+    thread,
+    time::{Duration, Instant, SystemTime},
 };
 
-use ai::memory::{Memory, REC, REF, Store, Summary, level, seg_path};
+use ai::memory::{Coord, Message, REF, Store};
 use tempfile::TempDir;
 
 const ISOLATE: [&str; 17] = [
@@ -60,6 +61,7 @@ impl Sandbox {
         for k in ISOLATE {
             c.env_remove(k);
         }
+        c.env("AI_MEMORY_NAP", "0");
     }
 
     fn cmd(&self, cwd: &Path, store: Option<&Path>) -> Command {
@@ -103,19 +105,16 @@ impl Sandbox {
         self.git(self.path(), &[&[dir.as_str()], args].concat())
     }
 
-    fn memories(&self) -> Vec<Memory> {
-        let mut c = Command::new("git");
-        self.isolate(&mut c);
-        let blob = c
-            .arg(format!("--git-dir={}", self.store().display()))
-            .args(["cat-file", "blob", &format!("{REF}:log/0000/00")])
-            .output()
-            .unwrap()
-            .stdout;
-        assert_eq!(blob.len() % REC, 0);
-        blob.chunks(REC)
-            .map(|r| Memory::decode(r).unwrap())
-            .collect()
+    fn memories(&self) -> Vec<Message> {
+        let st = Store::open(&self.store()).unwrap();
+        let snap = st.snapshot().unwrap();
+        let mut out = Vec::new();
+        snap.scan(u64::MAX, |_, m| {
+            out.push(m);
+            Ok(())
+        })
+        .unwrap();
+        out
     }
 }
 
@@ -159,14 +158,11 @@ fn exit_codes_and_streams() {
     assert!(r.status.success() && text(&r.stdout).contains("No memories yet"));
     assert!(!s.ai(&["zoom"]).status.success());
 
-    for i in 0..2 {
-        s.ai(&["note", &format!("memory {i}")]);
-    }
-    assert!(s.ai(&["config", "WAKE_LINES=1"]).status.success());
-    let r = s.ai(&["wake"]);
+    assert!(s.ai(&["note", "memory 0"]).status.success());
+    let r = s.ai(&["zoom", "0+2"]);
     assert_eq!(r.status.code(), Some(1));
-    let out = text(&r.stdout);
-    assert!(out.starts_with("Cannot wake") && out.contains("Run: ai memory nap 0-1@"));
+    assert_eq!(text(&r.stderr), "No line 0+2.\n");
+    assert!(!s.ai(&["frobnicate"]).status.success());
 }
 
 #[test]
@@ -192,7 +188,7 @@ fn parallel_processes_lose_nothing() {
     let mut want: Vec<_> = (0..p).map(|i| format!("parallel note {i}")).collect();
     want.sort();
     assert_eq!(texts, want);
-    assert!(all.windows(2).all(|w| w[0].key() < w[1].key()));
+    assert!(all.windows(2).all(|w| w[0].ts <= w[1].ts));
     let log = s.store_git(&["log", "--format=%s", REF]);
     assert_eq!(log.lines().filter(|l| *l == "note").count(), p);
 }
@@ -265,9 +261,7 @@ fn provenance_comes_from_the_cwd_and_env() {
         ),
         ("pi", "-", "s2")
     );
-    let origin = s.store_git(&["config", "ai.memory.origin"]);
-    assert!(origin.len() == 6 && a.origin == origin && b.origin == origin);
-    assert!(a.ts.len() == 16 && a.ts.ends_with('Z') && a.key() < b.key());
+    assert!(a.ts.len() == 16 && a.ts.ends_with('Z') && a.ts <= b.ts);
 
     s.git(&work, &["remote", "remove", "origin"]);
     s.cmd(&work, Some(&s.store()))
@@ -276,9 +270,9 @@ fn provenance_comes_from_the_cwd_and_env() {
         .unwrap();
     assert_eq!(s.memories()[2].place.repo, "work");
 
-    let show = text(&s.ai(&["show", "0"]).stdout);
+    let show = text(&s.ai(&["show", "0+1"]).stdout);
     for f in [
-        format!("origin  {origin}\n"),
+        "kind    note\n".into(),
         "repo    acme/widget\n".into(),
         format!("head    {head}\n"),
         "branch  trunk\n".into(),
@@ -299,7 +293,7 @@ fn provenance_comes_from_the_cwd_and_env() {
     assert_eq!(
         first,
         format!(
-            "#0 {}-{}-{} {}:{} {origin} acme/widget noted inside a repo",
+            "0+1 {}-{}-{} {}:{} acme/widget note: noted inside a repo",
             &date[..4],
             &date[4..6],
             &date[6..],
@@ -313,17 +307,14 @@ fn provenance_comes_from_the_cwd_and_env() {
             .map(|l| l.split(' ').next().unwrap().to_string())
             .collect()
     };
-    assert_eq!(heads(&["--repo", "acme/widget"]), ["#0", "1"]);
-    assert_eq!(heads(&["--repo", "work"]), ["#2", "1"]);
-    assert_eq!(heads(&["--agent", "pi"]), ["#1", "1"]);
-    assert_eq!(heads(&["--session", "SESS-1"]), ["#0", "1"]);
-    assert_eq!(
-        heads(&["--origin", &origin.to_lowercase()]),
-        ["#0", "#1", "#2", "3"]
-    );
+    assert_eq!(heads(&["--repo", "acme/widget"]), ["0+1", "1"]);
+    assert_eq!(heads(&["--repo", "work"]), ["2+1", "1"]);
+    assert_eq!(heads(&["--agent", "pi"]), ["1+1", "1"]);
+    assert_eq!(heads(&["--session", "SESS-1"]), ["0+1", "1"]);
+    assert_eq!(heads(&["--kind", "note"]), ["0+1", "1+1", "2+1", "3"]);
     assert_eq!(
         heads(&["--since", "2000-01-01", "--agent", "claude-code"]),
-        ["#0", "1"]
+        ["0+1", "1"]
     );
     assert_eq!(grep(&["--agent", "pi", "--repo", "work"]), "No match.\n");
     assert_eq!(grep(&["--since", "2999-01-01"]), "No match.\n");
@@ -338,16 +329,16 @@ fn every_mutation_is_one_named_commit() {
     fs::write(&seed, "2020-01-01 an imported memory\n").unwrap();
     s.ai(&["import", seed.to_str().unwrap()]);
     s.ai(&["note", "a noted memory"]);
-    s.ai(&["nap", "0-1", "both"]);
-    s.ai(&["forget", "0-1"]);
-    s.ai(&["nap"]);
     s.ai(&["wake"]);
+    s.ai(&["nap"]);
     assert_eq!(
         s.store_git(&["log", "--format=%s|%cn <%ce>", REF]),
-        "forget 0-1|ai memory <ai@localhost>\n\
-         nap 0-1|ai memory <ai@localhost>\n\
-         note|ai memory <ai@localhost>\n\
+        "note|ai memory <ai@localhost>\n\
          import|ai memory <ai@localhost>"
+    );
+    assert_eq!(
+        s.store_git(&["ls-tree", "-r", "--name-only", REF]),
+        "log/0000/00\nlog/0000/01\ntree/0/0000/00\ntree/1/0000/00"
     );
     assert_eq!(s.store_git(&["for-each-ref", "--format=%(refname)"]), REF);
     s.store_git(&["fsck", "--strict", "--no-dangling"]);
@@ -388,14 +379,11 @@ fn nothing_is_written_outside_the_store() {
         vec!["import", seed.to_str().unwrap()],
         vec!["note", "first"],
         vec!["note", "second"],
-        vec!["nap"],
-        vec!["nap", "0-1", "both"],
         vec!["wake"],
-        vec!["config", "WAKE_LINES=4"],
+        vec!["config", "PART_LINES=4"],
         vec!["grep", "first", "-t"],
-        vec!["zoom", "0-1", "--depth", "1"],
-        vec!["show", "0-1"],
-        vec!["forget", "0-1"],
+        vec!["zoom", "0+2"],
+        vec!["show", "0+2"],
     ] {
         let r = s.cmd(&work, Some(&d)).args(&args).output().unwrap();
         assert!(
@@ -447,362 +435,60 @@ fn a_closed_pipe_is_quiet() {
     assert_eq!(text(&r.stderr), "");
 }
 
-fn day(i: u32) -> String {
-    format!("2020-{:02}-{:02}", i / 28 + 1, i % 28 + 1)
-}
+/// A fake `claude`: answers every stream-json message with a fixed result.
+const FAKE_CLAUDE: &str = "#!/bin/sh
+while read -r line; do
+  printf '%s\\n' '{\"type\":\"result\",\"is_error\":false,\"result\":\"a fake summary\",\"stop_reason\":\"end_turn\"}'
+done
+";
 
-fn nap_offer(out: &str) -> Option<String> {
-    let at = out.find("Run: ai memory nap ")? + "Run: ai memory nap ".len();
-    out[at..].split(' ').next().map(str::to_string)
-}
-
-impl Sandbox {
-    fn remote(&self) -> PathBuf {
-        self.path().join("remote.git")
+#[test]
+fn a_note_naps_in_the_background() {
+    let s = Sandbox::new();
+    assert!(s.ai(&["init"]).status.success());
+    let bin = s.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let claude = bin.join("claude");
+    fs::write(&claude, FAKE_CLAUDE).unwrap();
+    fs::set_permissions(&claude, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    for i in 0..2 {
+        let r = s
+            .cmd(s.path(), Some(&s.store()))
+            .args(["note", &format!("note {i} {}", "z".repeat(400))])
+            .env("AI_MEMORY_NAP", "1")
+            .env("PATH", &path)
+            .output()
+            .unwrap();
+        assert!(r.status.success(), "{}", text(&r.stderr));
+        assert_eq!(text(&r.stdout), format!("Saved as {i}+1.\n"));
     }
-
-    fn clone(&self, name: &str) -> PathBuf {
-        let r = self.remote();
-        if !r.exists() {
-            self.git(self.path(), &["init", "-q", "--bare", r.to_str().unwrap()]);
-        }
-        let d = self.path().join(name);
-        self.say(&d, &["init"]);
-        self.git_at(&d, &["remote", "add", "origin", r.to_str().unwrap()]);
-        d
-    }
-
-    fn say(&self, d: &Path, args: &[&str]) -> String {
-        let r = self.ai_at(d, args);
-        assert!(r.status.success(), "{args:?}: {}", text(&r.stderr));
-        text(&r.stdout)
-    }
-
-    fn import(&self, d: &Path, days: impl IntoIterator<Item = u32>, tag: &str) {
-        let f = self.path().join("seed.txt");
-        let lines: String = days
-            .into_iter()
-            .map(|i| format!("{} {tag} {i}\n", day(i)))
-            .collect();
-        fs::write(&f, lines).unwrap();
-        self.say(d, &["import", f.to_str().unwrap()]);
-    }
-
-    fn settle(&self, d: &Path, summary: &str) -> usize {
-        let mut n = 0;
-        while let Some(id) = nap_offer(&self.say(d, &["nap"])) {
-            self.say(d, &["nap", &id, summary]);
-            n += 1;
-        }
-        n
-    }
-
-    fn rev(&self, d: &Path, spec: &str) -> String {
-        self.git_at(d, &["rev-parse", spec])
-    }
-
-    fn texts(&self, d: &Path) -> Vec<String> {
-        let s = Store::open(d).unwrap();
-        let snap = s.snapshot().unwrap();
-        let n = snap.log_len().unwrap();
-        snap.log_slice(0, n)
-            .unwrap()
-            .into_iter()
-            .map(|m| m.text)
-            .collect()
-    }
-}
-
-fn levels(d: &Path) -> Vec<u64> {
-    let s = Store::open(d).unwrap();
-    let snap = s.snapshot().unwrap();
-    let n = snap.log_len().unwrap();
-    let mut out = Vec::new();
-    let mut size = 2;
-    while size <= n {
-        let built = snap.level_len(size).unwrap();
-        for k in 0..built {
-            let seg = snap.read(&seg_path(&level(size), k / 256)).unwrap();
-            let at = (k % 256) as usize * REC;
-            let sum = Summary::decode(&seg[at..at + REC]).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let st = Store::open(&s.store()).unwrap();
+        if let Some(n) = st.snapshot().unwrap().node(Coord::new(1, 0)).unwrap() {
             assert_eq!(
-                sum.fp,
-                snap.fingerprint(k * size, (k + 1) * size).unwrap(),
-                "summary {k} of size {size}"
+                (n.text.as_str(), n.model.as_str()),
+                ("a fake summary", "sonnet")
             );
+            break;
         }
-        if let Some(&below) = out.last() {
-            assert!(built <= below / 2, "level {size} outgrew its halves");
-        }
-        out.push(built);
-        size *= 2;
+        assert!(
+            Instant::now() < deadline,
+            "no nap: {}",
+            fs::read_to_string(s.store().join("nap.log")).unwrap_or_default()
+        );
+        thread::sleep(Duration::from_millis(50));
     }
-    out
-}
-
-#[test]
-fn sync_without_a_remote_stays_local() {
-    let s = Sandbox::new();
-    s.ai(&["init"]);
-    s.ai(&["note", "alone"]);
-    let out = s.say(&s.store(), &["sync"]);
-    assert!(
-        out.starts_with("No remote: this memory is local only. To sync it, run: git --git-dir "),
-        "{out}"
-    );
-    let out = s.say(&s.store(), &["wake"]);
-    assert!(
-        !out.contains("Warning") && out.ends_with("You are awake.\n"),
-        "{out}"
-    );
-    assert_eq!(s.store_git(&["for-each-ref", "--format=%(refname)"]), REF);
-}
-
-#[test]
-fn sync_fast_forwards_and_is_idempotent() {
-    let s = Sandbox::new();
-    let (a, b) = (s.clone("a"), s.clone("b"));
-    assert_eq!(s.say(&a, &["sync"]), "Up to date with origin.\n");
-    for t in ["one", "two", "three"] {
-        s.say(&a, &["note", t]);
-    }
-    assert_eq!(s.say(&a, &["sync"]), "Pushed to origin.\n");
-    assert_eq!(
-        s.say(&b, &["sync"]),
-        "Merged 3 memories from origin; 1 summary to redo. Run: ai memory nap\n"
-    );
-    let head = s.rev(&a, REF);
-    assert_eq!(s.rev(&b, REF), head);
-    for d in [&b, &a, &b] {
-        assert_eq!(s.say(d, &["sync"]), "Up to date with origin.\n");
-    }
-    assert_eq!(
-        (s.rev(&a, REF), s.rev(&b, REF)),
-        (head.clone(), head.clone())
-    );
-    assert_eq!(s.rev(&s.remote(), REF), head);
-    assert_eq!(s.texts(&b), ["one", "two", "three"]);
-}
-
-#[test]
-fn unrelated_interleaved_clones_converge() {
-    let s = Sandbox::new();
-    let (a, b) = (s.clone("a"), s.clone("b"));
-    s.import(&a, (0..40).map(|i| 2 * i), "a");
-    s.import(&b, (0..40).map(|i| 2 * i + 1), "b");
-    s.settle(&a, "napped by a");
-    s.settle(&b, "napped by b");
-    assert_ne!(
-        s.git_at(&a, &["config", "ai.memory.origin"]),
-        s.git_at(&b, &["config", "ai.memory.origin"])
-    );
-    assert_eq!(s.say(&a, &["sync"]), "Pushed to origin.\n");
-    let out = s.say(&b, &["sync"]);
-    assert!(
-        out.starts_with("Merged 40 memories from origin; positions from #0 renumbered; 78 summaries to redo. Run: ai memory nap\n")
-            && out.ends_with("Pushed to origin.\n"),
-        "{out}"
-    );
-    let parents = s.git_at(&b, &["rev-list", "--parents", "-n1", REF]);
-    assert_eq!(parents.split(' ').count(), 3);
-    assert_eq!(
-        s.git_at(&b, &["log", "-1", "--format=%s", REF]),
-        "merge origin"
-    );
-    let out = s.say(&a, &["sync"]);
-    assert!(
-        out.starts_with(
-            "Merged 40 memories from origin; positions from #1 renumbered; 78 summaries"
-        ),
-        "{out}"
-    );
-    assert_eq!(s.rev(&a, REF), s.rev(&b, REF));
-    let want: Vec<_> = (0..80)
-        .map(|i| format!("{} {i}", if i % 2 == 0 { "a" } else { "b" }))
-        .collect();
-    assert_eq!(s.texts(&a), want);
-    assert_eq!(levels(&a), [0; 6]);
-
-    assert_eq!(s.settle(&a, "renapped by a"), 78);
-    assert_eq!(s.settle(&b, "renapped by b"), 78);
-    for d in [&a, &b, &a] {
-        s.say(d, &["sync"]);
-    }
-    let tree = s.rev(&a, &format!("{REF}^{{tree}}"));
-    assert_eq!(s.rev(&b, &format!("{REF}^{{tree}}")), tree);
-    assert_eq!(s.rev(&s.remote(), &format!("{REF}^{{tree}}")), tree);
-    assert_eq!(levels(&b), [40, 20, 10, 5, 2, 1]);
-    assert_eq!(s.say(&b, &["nap"]), "Nothing left to compress.\n");
-    assert_eq!(s.say(&b, &["sync"]), "Up to date with origin.\n");
-}
-
-#[test]
-fn summaries_are_reused_at_shifted_offsets() {
-    let s = Sandbox::new();
-    let (a, b) = (s.clone("a"), s.clone("b"));
-    s.import(&a, 10..18, "a");
-    s.import(&b, 0..4, "b");
-    assert_eq!(s.settle(&a, "napped by a"), 7);
-    assert_eq!(s.settle(&b, "napped by b"), 3);
-    s.say(&a, &["sync"]);
-    assert_eq!(
-        s.say(&b, &["sync"]),
-        "Merged 8 memories from origin; 1 summary to redo. Run: ai memory nap\nPushed to origin.\n"
-    );
-    assert_eq!(levels(&b), [6, 3, 0]);
-    let by = |id| {
-        let out = s.say(&b, &["show", id]);
-        out.lines().last().unwrap().to_string()
-    };
-    assert_eq!(
-        ["0-3", "4-7", "8-9", "10-11"].map(by),
-        ["b", "a", "a", "a"].map(|w| format!("text    napped by {w}"))
-    );
-    assert!(s.say(&b, &["nap"]).contains("Run: ai memory nap 0-7@"));
-    let out = s.say(&a, &["sync"]);
-    assert!(
-        out.starts_with("Merged 4 memories from origin; positions from #0 renumbered; 1 summary"),
-        "{out}"
-    );
-}
-
-#[test]
-fn an_unreachable_remote_is_a_warning() {
-    let s = Sandbox::new();
-    let (a, b) = (s.clone("a"), s.clone("b"));
-    s.say(&a, &["note", "first"]);
-    s.say(&a, &["note", "second"]);
-    s.say(&a, &["sync"]);
-    s.git_at(
-        &b,
-        &[
-            "fetch",
-            "-q",
-            "origin",
-            "+refs/ai/memory:refs/ai/remotes/origin/memory",
-        ],
-    );
-    fs::rename(s.remote(), s.path().join("gone.git")).unwrap();
-    let out = s.say(&b, &["sync"]);
-    assert!(
-        out.starts_with("Warning: cannot reach origin: ")
-            && out.ends_with(
-                "Merged 2 memories from origin; 1 summary to redo. Run: ai memory nap\n"
-            ),
-        "{out}"
-    );
-    s.say(&b, &["note", "third"]);
-    let out = s.say(&b, &["wake"]);
-    assert!(
-        out.starts_with("Warning: cannot reach origin: ") && out.contains("You are awake."),
-        "{out}"
-    );
-    assert_eq!(s.texts(&b), ["first", "second", "third"]);
-}
-
-#[test]
-fn wake_gives_up_on_a_slow_remote() {
-    let s = Sandbox::new();
-    let a = s.clone("a");
-    s.git_at(
-        &a,
-        &[
-            "remote",
-            "set-url",
-            "origin",
-            "ssh://example.invalid/memory",
-        ],
-    );
-    s.say(&a, &["note", "patience"]);
-    let t0 = std::time::Instant::now();
     let r = s
-        .cmd(s.path(), Some(&a))
-        .arg("wake")
-        .env("GIT_SSH_COMMAND", "sh -c 'sleep 10' --")
+        .cmd(s.path(), Some(&s.store()))
+        .arg("nap")
+        .env("PATH", &path)
         .output()
         .unwrap();
-    assert!(t0.elapsed().as_secs() < 8, "{:?}", t0.elapsed());
     let out = text(&r.stdout);
-    assert!(r.status.success(), "{}", text(&r.stderr));
     assert!(
-        out.starts_with("Warning: cannot reach origin: no answer in time.\n")
-            && out.contains("#0 ")
-            && out.ends_with("You are awake.\n"),
+        out == "Nothing to build.\n" || out.starts_with("A compactor is already running"),
         "{out}"
     );
-}
-
-#[test]
-fn wake_takes_the_remote_first() {
-    let s = Sandbox::new();
-    let (a, b) = (s.clone("a"), s.clone("b"));
-    s.say(&a, &["note", "from a"]);
-    s.say(&a, &["sync"]);
-    let out = s.say(&b, &["wake"]);
-    assert!(
-        out.starts_with("Merged 1 memory from origin.\n") && out.contains("from a"),
-        "{out}"
-    );
-    s.say(&b, &["note", "from b"]);
-    let out = s.say(&b, &["wake"]);
-    assert!(!out.contains("Merged") && !out.contains("Pushed"), "{out}");
-    assert_eq!(s.rev(&s.remote(), REF), s.rev(&b, REF));
-}
-
-#[test]
-fn a_lost_push_race_is_retried() {
-    use std::os::unix::fs::PermissionsExt;
-    let s = Sandbox::new();
-    let (a, b) = (s.clone("a"), s.clone("b"));
-    s.say(&b, &["note", "from b"]);
-    s.git_at(&b, &["push", "-q", "origin", "refs/ai/memory:refs/ai/held"]);
-    let hook = s.remote().join("hooks/pre-receive");
-    fs::write(
-        &hook,
-        "#!/bin/sh\n\
-         if [ -f armed ]; then\n\
-           rm armed\n\
-           unset GIT_QUARANTINE_PATH GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES\n\
-           git update-ref refs/ai/memory refs/ai/held\n\
-         fi\n",
-    )
-    .unwrap();
-    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
-    fs::write(s.remote().join("armed"), "").unwrap();
-    s.say(&a, &["note", "from a"]);
-    let out = s.say(&a, &["sync"]);
-    assert!(!s.remote().join("armed").exists());
-    assert!(
-        out.starts_with("Merged 1 memory from origin") && out.ends_with("Pushed to origin.\n"),
-        "{out}"
-    );
-    assert_eq!(s.rev(&s.remote(), REF), s.rev(&a, REF));
-    let mut texts = s.texts(&a);
-    texts.sort();
-    assert_eq!(texts, ["from a", "from b"]);
-}
-
-#[test]
-fn nap_refuses_a_block_a_sync_changed() {
-    let s = Sandbox::new();
-    let (a, b) = (s.clone("a"), s.clone("b"));
-    s.import(&b, [0], "b");
-    s.say(&b, &["sync"]);
-    s.import(&a, [1, 2], "a");
-    let id = nap_offer(&s.say(&a, &["nap"])).unwrap();
-    assert!(id.starts_with("0-1@") && id.len() == 8, "{id}");
-    s.say(&a, &["sync"]);
-    let r = s.ai_at(&a, &["nap", &id, "stale"]);
-    assert_eq!(r.status.code(), Some(1));
-    assert_eq!(
-        text(&r.stderr),
-        "0-1: block changed by a sync. Run: ai memory nap\n"
-    );
-    let fresh = nap_offer(&s.say(&a, &["nap"])).unwrap();
-    assert_ne!(fresh, id);
-    assert!(
-        s.say(&a, &["nap", &fresh, "fresh"])
-            .starts_with("0-1 saved.")
-    );
-    assert!(!s.ai_at(&a, &["nap", "0-1@zz", "x"]).status.success());
 }

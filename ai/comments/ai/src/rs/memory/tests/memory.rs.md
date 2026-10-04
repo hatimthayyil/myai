@@ -1,7 +1,8 @@
 # tests/memory.rs
 
-Port of OptMem's `test.py`, driving the library in-process (`Cli::run` with a buffer) over a synthetic life of N=2000 memories with a fake compressor (join + truncate to 280). Python checks that only made sense for the script were dropped: the shebang smoke run, the `curl | sh` bare-PATH order run (the order now names `ai memory`, which must be on PATH), and the latin-1 locale check (Rust writes bytes). Torn-write and permission checks went with the file store: git objects are written whole.
+In-process library and CLI tests (`Cli::run_with` with a fake `Runtime`).
 
-Store state is inspected through the library (`Store`, `Snapshot`); corruption is injected with `Store::mutate` (`rewrite`). Cross-process CAS, provenance, commit messages and the home default are covered by the binary tests in `tests/cli.rs`.
-
-Navigation: `zoom` descends 1024 → 128 → 16 → raw in 3 calls, checking every printed id is zoomable and the frontier tiles its block; refusal names a fitting depth; a raw block is never refused. `grep` paging follows the printed `--before` footers until every hit was seen exactly once, for the log and with `-t` (summaries interleave, so ties in position are exercised).
+- `Fake`: a backend whose reply is a function of the step text and attempt; it asserts what every call must look like (system = COMPACT, cached `<chat>` pieces with no ids or placeholders, unmarked step, retry message ends `| ← LIMIT`) and records order and peak concurrency. Summaries are 300 bytes so two never merge free.
+- View invariants (spec §5, ported from shitty-optchat's selfcheck): 1200 random messages on a 6000-byte budget, nodes built synchronously in rule-3 order: tiles `[0,T)`, size bookkeeping exact, never over budget while a mergeable pair exists, never splits, refold equals the live fold, stays near budget.
+- Rule 3, free nodes and cascades, zoom semantics, placeholder rendering, compactor order/concurrency/settle, view under budget while logging, notes from another process picked up, size retries (shortest of 5), failure reported once then retried, the compactor lock, and a CLI life (note limits, import, wake pinned across parts, nap, zoom, show, grep paging).
+- Lock race: `before_release` appends a note and runs a second nap while the first still holds the lock; the second must report the lock taken and the first must build the note's nodes before exiting.

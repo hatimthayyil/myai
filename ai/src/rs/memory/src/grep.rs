@@ -5,12 +5,14 @@ use clap::Args;
 use regex::{Regex, RegexBuilder};
 
 use crate::{
-    cli::{name, plural, span},
+    cli::{line_id, plural},
     config::Knob,
-    cover::Block,
-    record::{Who, midnight},
+    record::{Kind, Message, Who, flat, midnight},
     store::{ME, Snapshot},
+    tree::Coord,
 };
+
+const EXCERPT: usize = 400;
 
 #[derive(Args, Debug)]
 pub struct Grep {
@@ -34,8 +36,8 @@ pub struct Grep {
     tree: bool,
     #[arg(long, value_name = "YYYY-MM-DD", help = "only from this day on (UTC)")]
     since: Option<jiff::civil::Date>,
-    #[arg(long, help = "only from this clone")]
-    origin: Option<String>,
+    #[arg(long, value_enum, help = "only messages of this kind")]
+    kind: Option<Kind>,
     #[arg(long, help = "only by this agent")]
     agent: Option<String>,
     #[arg(long, help = "only from this session")]
@@ -44,8 +46,8 @@ pub struct Grep {
     repo: Option<String>,
     #[arg(
         long,
-        value_name = "ID",
-        help = "only older than this id: the next page"
+        value_name = "ID+N",
+        help = "only older than this line: the next page"
     )]
     before: Option<String>,
     #[arg(
@@ -61,7 +63,7 @@ pub struct Grep {
         long,
         value_name = "N",
         default_value_t = 0,
-        help = "show N neighbouring memories"
+        help = "show N neighbouring messages"
     )]
     context: u64,
     #[arg(short, long, help = "print only the count")]
@@ -70,8 +72,8 @@ pub struct Grep {
 
 type Key = (u64, u64);
 
-fn key((lo, hi): Block) -> Key {
-    (hi - 1, hi - lo)
+fn key(c: Coord) -> Key {
+    (c.end() - 1, c.n())
 }
 
 fn quote(s: &str) -> String {
@@ -100,6 +102,32 @@ fn has_upper(pattern: &str, literal: bool) -> bool {
     false
 }
 
+/// `text` on one line; past [`EXCERPT`] bytes, a window around the first match.
+fn excerpt(text: &str, pat: Option<&Regex>) -> String {
+    let text = flat(text);
+    if text.len() <= EXCERPT {
+        return text;
+    }
+    let at = pat.and_then(|p| p.find(&text)).map_or(0, |m| m.start());
+    let lo = text.floor_char_boundary(at.saturating_sub(EXCERPT / 4));
+    let hi = text.floor_char_boundary(lo + EXCERPT);
+    let (pre, post) = (
+        if lo > 0 { "…" } else { "" },
+        if hi < text.len() { "…" } else { "" },
+    );
+    format!("{pre}{}{post}", &text[lo..hi])
+}
+
+fn detail(i: u64, m: &Message, pat: Option<&Regex>) -> String {
+    format!(
+        "{} {} {}: {}",
+        Coord::leaf(i),
+        m.stamp(),
+        m.kind.name(),
+        excerpt(&m.text, pat)
+    )
+}
+
 impl Grep {
     fn regex(&self) -> Result<Regex> {
         let src = match self.fixed_strings {
@@ -114,16 +142,20 @@ impl Grep {
             .map_err(|e| anyhow!("bad regex: {e}"))
     }
 
-    fn admits(&self, since: &str, ts: &str, origin: &str, repo: Option<&str>, who: &Who) -> bool {
-        let is = |want: &Option<String>, have: Option<&str>| {
-            want.as_deref()
-                .is_none_or(|w| have.is_some_and(|h| h.eq_ignore_ascii_case(w)))
+    fn admits(&self, since: &str, m: &Message) -> bool {
+        let is = |want: &Option<String>, have: &str| {
+            want.as_deref().is_none_or(|w| have.eq_ignore_ascii_case(w))
         };
-        ts >= since
-            && is(&self.origin, Some(origin))
-            && is(&self.repo, repo)
-            && is(&self.agent, Some(&who.agent))
-            && is(&self.session, Some(&who.session))
+        let Who { agent, session, .. } = &m.who;
+        m.ts.as_str() >= since
+            && self.kind.is_none_or(|k| k == m.kind)
+            && is(&self.repo, &m.place.repo)
+            && is(&self.agent, agent)
+            && is(&self.session, session)
+    }
+
+    fn message_only(&self) -> bool {
+        self.kind.is_some() || self.repo.is_some() || self.agent.is_some() || self.session.is_some()
     }
 
     fn command(&self) -> String {
@@ -139,7 +171,7 @@ impl Grep {
         }
         let opts = [
             ("--since", self.since.map(|d| d.to_string())),
-            ("--origin", self.origin.clone()),
+            ("--kind", self.kind.map(|k| k.name().into())),
             ("--agent", self.agent.clone()),
             ("--session", self.session.clone()),
             ("--repo", self.repo.clone()),
@@ -156,17 +188,17 @@ impl Grep {
 }
 
 struct Unit {
-    block: Block,
-    span: Option<Block>,
+    line: Coord,
+    span: Option<(u64, u64)>,
     lines: Vec<String>,
     size: u64,
 }
 
 impl Unit {
-    fn new(block: Block, span: Option<Block>, lines: Vec<String>) -> Unit {
+    fn new(line: Coord, span: Option<(u64, u64)>, lines: Vec<String>) -> Unit {
         let size = lines.iter().map(|l| l.len() as u64 + 1).sum();
         Unit {
-            block,
+            line,
             span,
             lines,
             size,
@@ -174,7 +206,7 @@ impl Unit {
     }
 
     fn key(&self) -> Key {
-        key(self.block)
+        key(self.line)
     }
 }
 
@@ -207,11 +239,11 @@ impl Page {
         self.trim();
     }
 
-    fn extend(&mut self, pos: u64, line: String) {
+    fn extend(&mut self, i: u64, line: String) {
         let Some(u) = self.units.back_mut() else {
             return;
         };
-        u.span = u.span.map(|(lo, _)| (lo, pos + 1));
+        u.span = u.span.map(|(lo, _)| (lo, i + 1));
         u.size += line.len() as u64 + 1;
         self.size += line.len() as u64 + 1;
         u.lines.push(line);
@@ -230,32 +262,34 @@ impl Page {
 
 pub fn grep(s: &Snapshot, out: &mut dyn Write, g: &Grep) -> Result<ExitCode> {
     let pat = g.regex()?;
-    let before = g.before.as_deref().map(span).transpose()?.map(key);
+    let t = s.log_len()?;
+    let before = g
+        .before
+        .as_deref()
+        .map(|b| line_id(b, t))
+        .transpose()?
+        .map(key);
     let below = |k: Key| before.is_none_or(|b| k < b);
-    let end = before.map_or(u64::MAX, |b| b.0 + 1).min(s.log_len()?);
+    let end = before.map_or(t, |b| b.0 + 1);
     let since = g.since.map(midnight).unwrap_or_default();
     let chars = s.cfg().get(Knob::PartChars);
     let (mut pages, mut hits) = (vec![Page::new(chars, g.max)], 0);
 
     let log = &mut pages[0];
     let (mut ring, mut after) = (VecDeque::new(), 0);
-    s.log_scan(end, |i, m| {
-        let p = &m.place;
-        if below((i, 1))
-            && g.admits(&since, &m.ts, &m.origin, Some(&p.repo), &m.who)
-            && pat.is_match(&m.text)
-        {
+    s.scan(end, |i, m| {
+        if below((i, 1)) && g.admits(&since, &m) && pat.is_match(&m.text) {
             hits += 1;
             let first = ring.front().map_or(i, |&(j, _)| j);
             let mut lines: Vec<_> = ring.drain(..).map(|(_, l)| l).collect();
-            lines.push(m.detail(i));
-            log.push(Unit::new((i, i + 1), Some((first, i + 1)), lines));
+            lines.push(detail(i, &m, Some(&pat)));
+            log.push(Unit::new(Coord::leaf(i), Some((first, i + 1)), lines));
             after = g.context;
         } else if after > 0 {
             after -= 1;
-            log.extend(i, m.detail(i));
+            log.extend(i, detail(i, &m, None));
         } else if g.context > 0 {
-            ring.push_back((i, m.detail(i)));
+            ring.push_back((i, detail(i, &m, None)));
             if ring.len() as u64 > g.context {
                 ring.pop_front();
             }
@@ -263,22 +297,21 @@ pub fn grep(s: &Snapshot, out: &mut dyn Write, g: &Grep) -> Result<ExitCode> {
         Ok(())
     })?;
 
-    let mut size = 2;
-    while g.tree && size <= end {
+    let mut l = 1;
+    while g.tree && !g.message_only() && 1u64 << l <= end {
         let mut page = Page::new(chars, g.max);
-        s.tree_scan(size, end, |b, sum| {
-            if below(key(b))
-                && g.admits(&since, &sum.ts, &sum.origin, None, &sum.who)
-                && pat.is_match(&sum.text)
-            {
+        for (i, n) in s.level(l)?.into_iter().enumerate() {
+            let c = Coord::new(l, i as u64);
+            let Some(n) = n.filter(|_| c.end() <= end) else {
+                continue;
+            };
+            if below(key(c)) && n.ts >= since && pat.is_match(&n.text) {
                 hits += 1;
-                let line = format!("#{} {}", name(b), sum.text);
-                page.push(Unit::new(b, None, vec![line]));
+                page.push(Unit::new(c, None, vec![format!("{c}|{}", n.text)]));
             }
-            Ok(())
-        })?;
+        }
         pages.push(page);
-        size *= 2;
+        l += 1;
     }
 
     if hits == 0 {
@@ -312,7 +345,7 @@ pub fn grep(s: &Snapshot, out: &mut dyn Write, g: &Grep) -> Result<ExitCode> {
             out,
             "Newest {shown} of {hits}. Older: {} --before {}",
             g.command(),
-            name(u.block)
+            u.line
         )?,
         _ => writeln!(out, "{}.", plural(hits, "match"))?,
     }
@@ -333,11 +366,24 @@ mod tests {
 
     #[test]
     fn keys_order_by_last_member_then_size() {
-        assert!(key((2, 4)) < key((0, 4)) && key((3, 4)) < key((2, 4)));
+        let k = |l, i| key(Coord::new(l, i));
+        assert!(k(1, 1) < k(2, 0) && k(0, 3) < k(1, 1));
         assert_eq!(quote("it's"), r"'it'\''s'");
         assert_eq!(
             (word("acme/w-1"), word("a b")),
             ("acme/w-1".into(), "'a b'".into())
         );
+    }
+
+    #[test]
+    fn long_texts_show_a_window_around_the_match() {
+        assert_eq!(excerpt("a\nb", None), "a b");
+        let long = format!("{}needle{}", "x".repeat(1000), "y".repeat(1000));
+        let re = Regex::new("needle").unwrap();
+        let e = excerpt(&long, Some(&re));
+        assert!(e.starts_with('…') && e.ends_with('…') && e.contains("needle"));
+        assert!(e.len() <= EXCERPT + 2 * '…'.len_utf8());
+        let head = excerpt(&long, None);
+        assert!(head.starts_with("xxx") && head.ends_with('…'));
     }
 }
