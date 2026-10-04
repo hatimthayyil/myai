@@ -1,0 +1,19 @@
+src/main.rs
+  s_ce5ef02f9e7842::t_9733a01855f261 6
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ed041fc44c1c87ce4b1d6fad05aad306436c4090",
+  "prompts": {},
+  "sessions": {
+    "s_ce5ef02f9e7842": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3e6ab21a-83a7-4675-864f-10f0b6a51524",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
