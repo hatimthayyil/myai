@@ -37,10 +37,6 @@ struct Sandbox {
 impl Sandbox {
     fn new() -> Sandbox {
         let tmp = TempDir::new().unwrap();
-        assert!(
-            !tmp.path().ancestors().any(|a| a.join(".git").exists()),
-            "the temp dir is inside a git repository"
-        );
         fs::create_dir(tmp.path().join("home")).unwrap();
         Sandbox { tmp }
     }
@@ -57,7 +53,8 @@ impl Sandbox {
         let home = self.path().join("home");
         c.env("HOME", &home)
             .env("XDG_CONFIG_HOME", home.join(".config"))
-            .env("GIT_CONFIG_NOSYSTEM", "1");
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CEILING_DIRECTORIES", self.path().parent().unwrap());
         for k in ISOLATE {
             c.env_remove(k);
         }
