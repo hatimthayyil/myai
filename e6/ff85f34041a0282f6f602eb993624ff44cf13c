@@ -1,0 +1,32 @@
+ai/comments/flake.nix.md
+  s_a2bb6566b3fc43::t_6d8ba1e3bd9f0e 14
+  s_a2bb6566b3fc43::t_af31cc4fb8a15d 1-13
+ai/comments/devenv.nix.md
+  s_a2bb6566b3fc43::t_54d98f9d6cff49 3
+ai/comments/Cargo.toml.md
+  s_a2bb6566b3fc43::t_5364fb9b7a1b0b 3
+flake.nix
+  s_a2bb6566b3fc43::t_b82ef1db0e2b65 1-36,38,43-53
+  s_a2bb6566b3fc43::t_1f86891fa6f128 37,39
+  s_a2bb6566b3fc43::t_8e8fa236c57bb7 40-42
+devenv.lock
+  s_a2bb6566b3fc43::t_9b20bcf5af8250 20,22,25-26,28-29,34-35,59
+flake.lock
+  s_a2bb6566b3fc43::t_52feb3c3897f6b 1-27
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e6ff85f34041a0282f6f602eb993624ff44cf13c",
+  "prompts": {},
+  "sessions": {
+    "s_a2bb6566b3fc43": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8d482500-9fe7-4d08-bd90-4df9fbafe671",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
