@@ -456,6 +456,9 @@ mod tests {
 
     struct NoCalls;
     impl Backend for NoCalls {
+        fn agent(&self) -> &str {
+            "fake"
+        }
         fn model(&self) -> &str {
             "fake"
         }

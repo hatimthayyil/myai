@@ -270,6 +270,7 @@ fn provenance_comes_from_the_cwd_and_env() {
     let show = text(&s.ai(&["show", "0+1"]).stdout);
     for f in [
         "kind    note\n".into(),
+        format!("origin  {}\n", a.origin),
         "repo    acme/widget\n".into(),
         format!("head    {head}\n"),
         "branch  trunk\n".into(),
@@ -290,12 +291,13 @@ fn provenance_comes_from_the_cwd_and_env() {
     assert_eq!(
         first,
         format!(
-            "0+1 {}-{}-{} {}:{} acme/widget note: noted inside a repo",
+            "0+1 {}-{}-{} {}:{} {} acme/widget note: noted inside a repo",
             &date[..4],
             &date[4..6],
             &date[6..],
             &time[..2],
-            &time[2..]
+            &time[2..],
+            a.origin
         )
     );
     let heads = |args: &[&str]| -> Vec<String> {
@@ -308,6 +310,8 @@ fn provenance_comes_from_the_cwd_and_env() {
     assert_eq!(heads(&["--repo", "work"]), ["2+1", "1"]);
     assert_eq!(heads(&["--agent", "pi"]), ["1+1", "1"]);
     assert_eq!(heads(&["--session", "SESS-1"]), ["0+1", "1"]);
+    assert_eq!(heads(&["--origin", &a.origin]), ["0+1", "1+1", "2+1", "3"]);
+    assert_eq!(grep(&["--origin", "NOPE"]), "No match.\n");
     assert_eq!(heads(&["--kind", "note"]), ["0+1", "1+1", "2+1", "3"]);
     assert_eq!(
         heads(&["--since", "2000-01-01", "--agent", "claude-code"]),
@@ -435,7 +439,7 @@ fn a_closed_pipe_is_quiet() {
 /// A fake `claude`: answers every stream-json message with a fixed result.
 const FAKE_CLAUDE: &str = "#!/bin/sh
 while read -r line; do
-  printf '%s\\n' '{\"type\":\"result\",\"is_error\":false,\"result\":\"a fake summary\",\"stop_reason\":\"end_turn\"}'
+  printf '%s\\n' '{\"type\":\"result\",\"is_error\":false,\"result\":\"a fake summary\",\"stop_reason\":\"end_turn\",\"session_id\":\"fake-sess\"}'
 done
 ";
 
@@ -465,8 +469,20 @@ fn a_note_naps_in_the_background() {
         let st = Store::open(&s.store()).unwrap();
         if let Some(n) = st.snapshot().unwrap().node(Coord::new(1, 0)).unwrap() {
             assert_eq!(
-                (n.text.as_str(), n.model.as_str()),
-                ("a fake summary", "sonnet")
+                (
+                    n.text.as_str(),
+                    n.who.agent.as_str(),
+                    n.who.model.as_str(),
+                    n.who.session.as_str(),
+                    n.origin.as_str()
+                ),
+                (
+                    "a fake summary",
+                    "claude-code",
+                    "sonnet",
+                    "fake-sess",
+                    st.origin()
+                )
             );
             break;
         }

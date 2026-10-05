@@ -19,8 +19,8 @@ use gix::{
 };
 
 use crate::{
-    config::Config,
-    record::{Message, Node, now},
+    config::{Config, SECTION, SUBSECTION},
+    record::{Message, Node, Who, now},
     tree::{Coord, free, joined},
 };
 
@@ -28,7 +28,7 @@ pub const ME: &str = "ai memory";
 pub const REF: &str = "refs/ai/memory";
 pub const LOG: &str = "log";
 const SEG: u64 = 256;
-const FREE: &str = "-";
+const ORIGIN: &str = "origin";
 
 /// A path as the user would type it: fold `$HOME` to `~`.
 pub fn pretty(p: &Path) -> String {
@@ -83,6 +83,15 @@ pub struct Store {
     repo: gix::Repository,
     dir: PathBuf,
     pub cfg: Config,
+    origin: String,
+}
+
+/// `len` Crockford base-32 digits of `bits`.
+fn crockford(bits: u32, len: usize) -> String {
+    const ABC: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+    (0..len)
+        .map(|i| ABC[(bits >> (5 * i) & 31) as usize] as char)
+        .collect()
 }
 
 impl Store {
@@ -126,15 +135,52 @@ impl Store {
         }
         repo.committer_or_set_fallback(ME, "ai@localhost")?;
         let cfg = Config::load(&repo.config_snapshot(), &pretty(&dir.join("config")))?;
-        Ok(Some(Store {
+        let mut s = Store {
             repo,
             dir: dir.to_path_buf(),
             cfg,
-        }))
+            origin: String::new(),
+        };
+        s.origin = s.load_origin()?;
+        Ok(Some(s))
+    }
+
+    /// The origin in this store's config, created by the first open.
+    fn load_origin(&self) -> Result<String> {
+        let key = format!("{SECTION}.{SUBSECTION}.{ORIGIN}");
+        if let Some(o) = self.repo.config_snapshot().string(key.as_str()) {
+            return Ok(o.to_string());
+        }
+        self.edit_config(|f| {
+            if let Some(o) = f.string_by(SECTION, Some(SUBSECTION.into()), ORIGIN) {
+                return Ok(o.to_string());
+            }
+            let o = crockford(getrandom::u32()?, 6);
+            f.set_raw_value_by(SECTION, Some(SUBSECTION.into()), ORIGIN, o.as_str())?;
+            Ok(o)
+        })
     }
 
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// This store's id, stamped on every message and node it writes.
+    pub fn origin(&self) -> &str {
+        &self.origin
+    }
+
+    /// Replaces this store's id in its config.
+    pub fn set_origin(&mut self, origin: &str) -> Result<()> {
+        if origin.is_empty() || origin.contains(char::is_whitespace) {
+            bail!("'{origin}' is not an origin: one word.");
+        }
+        self.edit_config(|f| {
+            f.set_raw_value_by(SECTION, Some(SUBSECTION.into()), ORIGIN, origin)?;
+            Ok(())
+        })?;
+        self.origin = origin.into();
+        Ok(())
     }
 
     pub fn head(&self) -> Result<Option<ObjectId>> {
@@ -215,19 +261,24 @@ impl Store {
         }
     }
 
-    pub fn save_config(&self, cfg: &Config) -> Result<()> {
+    fn edit_config<R>(&self, edit: impl FnOnce(&mut gix::config::File) -> Result<R>) -> Result<R> {
         let p = self.dir.join("config");
         let wait = Fail::AfterDurationWithBackoff(Duration::from_secs(3));
         let mut lock = gix::lock::File::acquire_to_update_resource(&p, wait, None)?;
         let mut file =
             gix::config::File::from_path_no_includes(p.clone(), gix::config::Source::Local)?;
-        cfg.save(&mut file)?;
+        let r = edit(&mut file)?;
         file.write_to(&mut lock).at(&p)?;
         lock.commit().map_err(|e| e.error).at(&p)?;
-        Ok(())
+        Ok(r)
+    }
+
+    pub fn save_config(&self, cfg: &Config) -> Result<()> {
+        self.edit_config(|f| cfg.save(f))
     }
 
     /// Appends `items` in order, with every free node they complete; returns the first new id.
+    /// A message without an origin gets this store's; every other field is kept as given.
     pub fn append(&self, msg: &str, items: &[Message]) -> Result<(u64, Built, Snapshot<'_>)> {
         let ((first, built), snap) = self.mutate(msg, |s| {
             let mut ed = Edit::new(s)?;
@@ -242,14 +293,14 @@ impl Store {
     }
 
     /// Writes node `c` unless it is built, with every free node above it it completes.
-    pub fn put_node(&self, c: Coord, model: &str, text: &str) -> Result<(Built, Snapshot<'_>)> {
+    pub fn put_node(&self, c: Coord, who: &Who, text: &str) -> Result<(Built, Snapshot<'_>)> {
         self.mutate(&format!("node {c}"), |s| {
             let mut ed = Edit::new(s)?;
             if c.end() > ed.t {
                 bail!("Node {c} is beyond the log: it holds {} messages.", ed.t);
             }
             if ed.text(c)?.is_none() {
-                ed.put(c, model, text)?;
+                ed.put(c, who, text)?;
             }
             Ok(ed.finish())
         })
@@ -290,10 +341,11 @@ impl<'a, 's> Edit<'a, 's> {
         Ok(Node::decode(&line).map(|n| n.text))
     }
 
-    fn put(&mut self, c: Coord, model: &str, text: &str) -> Result<()> {
+    fn put(&mut self, c: Coord, who: &Who, text: &str) -> Result<()> {
         let node = Node {
             ts: now(),
-            model: model.into(),
+            origin: self.snap.store.origin.clone(),
+            who: who.clone(),
             text: text.into(),
         };
         let line = node.encode();
@@ -318,7 +370,7 @@ impl<'a, 's> Edit<'a, 's> {
             return Ok(());
         };
         match free(joined(&a, &b)) {
-            Some(text) => self.put(p, FREE, &text),
+            Some(text) => self.put(p, &Who::default(), &text),
             None => Ok(()),
         }
     }
@@ -328,10 +380,14 @@ impl<'a, 's> Edit<'a, 's> {
             bail!("An empty message.");
         }
         let i = self.t;
+        let mut m = m.clone();
+        if m.origin.is_empty() {
+            m.origin.clone_from(&self.snap.store.origin);
+        }
         self.ch.put(fan_path(LOG, i), m.encode());
         self.t += 1;
         match free(crate::record::flat(&m.label())) {
-            Some(text) => self.put(Coord::leaf(i), FREE, &text),
+            Some(text) => self.put(Coord::leaf(i), &Who::default(), &text),
             None => Ok(()),
         }
     }

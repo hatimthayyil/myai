@@ -1,9 +1,9 @@
 # Glossary
 
 - `memory`: the store `ai memory` manages; one per user per machine, shared by every repo and session, append-only. A bare git repo at `~/.ai/memory` (override `AI_MEMORY_DIR`); all data lives as objects under `refs/ai/memory`, one commit per mutation. It is also the log of `ai chat`: one store.
-- `message`: one entry of the log, with a `kind`; its blob is `log/<hi>/<lo>`. Ids are positions `0, 1, …`, permanent.
+- `message`: one entry of the log, with a `kind`; its blob is `log/<hi>/<lo>`: header `ts kind origin repo head branch agent model session`, then the text. Ids are positions `0, 1, …`, permanent.
 - `kind`: `user` (the user's words), `talk` (the agent's replies), `tool` (its tool calls), `echo` (tool results), `note` (`ai memory note`, `import`).
-- `node`: one summary line of the tree, ≤ ~512 bytes (`NODE`). `(l, i)` covers messages `[i·2^l, (i+1)·2^l)`; level 0 summarizes one message, level `l` merges its two children. Stored one per line in `tree/<l>/<hi>/<lo>` segments of 256.
+- `node`: one summary line of the tree, ≤ ~512 bytes (`NODE`). `(l, i)` covers messages `[i·2^l, (i+1)·2^l)`; level 0 summarizes one message, level `l` merges its two children. Stored one per line (`ts origin agent model session text`) in `tree/<l>/<hi>/<lo>` segments of 256.
 - `id+n`: how a node is named: first message `id`, `n = 2^l` messages. `id+1` is one message; `zoom` and `show` take it.
 - `free node`: a source that fits `NODE` is its own node, no model call: a short message (`kind: text`), or two lines joined. Built in the same commit that completes its sources.
 - `view`: the nodes tiling `[0, T)`, oldest first, under `VIEW` = 128,000 bytes; grows by appending and merging the most due pair, never splits; folded again from message 0 at load. `wake` prints it; it is what `ai chat` sends each turn.
@@ -21,9 +21,10 @@
 - `settle`: wait until every line of the view is a summary; a turn starts only then. Cancellable.
 - `mid-run message`: a message typed while a turn runs; written to its stdin and logged when Claude takes it (replay). Untaken ones get a fresh turn after a `result`, or are logged unanswered after a cancel.
 - `MCP server`: `ai chat mcp`, stdio, read-only: `zoom` (paged by `PART_CHARS`) and `date` on the latest commit; tools reach the model as `mcp__memory__zoom`, `mcp__memory__date`.
+- `origin`: a store's random id (6 Crockford base-32 characters), made at `init` and kept in its git config as `ai.memory.origin`; stamped on every message and node the store writes.
 - `show`: every field of one message or node.
-- `grep`: rg-style regex search over every message's text (smart-case, `-F`, filters incl. `--kind`; `-t` adds nodes), newest page first; `--before <id+n>` pages back.
+- `grep`: rg-style regex search over every message's text (smart-case, `-F`, filters `--since`, `--kind`, `--origin`, `--agent`, `--session`, `--repo`; `-t` adds nodes), newest page first; `--before <id+n>` pages back.
 - `snapshot`: the memory as of one commit; every command reads one.
-- `knob`: a per-machine size in the memory repo's git config, set with `ai memory config NAME=VALUE`: `PART_CHARS`, `PART_LINES`.
+- `knob`: a per-machine size in the memory repo's git config, set with `ai memory config NAME=VALUE`: `ENTRY_CHARS`, `PART_CHARS`, `PART_LINES`.
 - `provenance`: origin of a data item: who/what produced it, when, from which session, model and commit.
 - `attribution`: authorship of work (code, files) as AI-generated, AI-assisted or human.

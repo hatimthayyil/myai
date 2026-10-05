@@ -13,7 +13,7 @@ use std::{
 
 use ai_memory::{
     Backend, Block, Cli, Compactor, Conversation, Coord, Kind, Mem, Message, NODE, Options,
-    PLACEHOLDER, Runtime, Store, VIEW, zoom,
+    PLACEHOLDER, Place, Runtime, Store, VIEW, Who, zoom,
 };
 use anyhow::{Result, bail};
 use clap::Parser;
@@ -136,7 +136,19 @@ struct FakeConv {
 
 struct Model(Arc<Fake>);
 
+fn fake_who() -> Who {
+    Who {
+        agent: "fake-harness".into(),
+        model: "fake".into(),
+        session: "fake-session".into(),
+    }
+}
+
 impl Backend for Model {
+    fn agent(&self) -> &str {
+        "fake-harness"
+    }
+
     fn model(&self) -> &str {
         "fake"
     }
@@ -178,6 +190,10 @@ impl Conversation for FakeConv {
         thread::sleep(Duration::from_millis(2));
         f.running.fetch_sub(1, Ordering::SeqCst);
         (f.reply)(&self.step, self.attempt)
+    }
+
+    fn session(&self) -> String {
+        "fake-session".into()
     }
 }
 
@@ -327,7 +343,16 @@ fn short_messages_are_their_own_nodes() {
             "0+2=user: hi there talk: hello"
         ]
     );
-    assert_eq!(snap.node(Coord::new(1, 0)).unwrap().unwrap().model, "-");
+    let free = snap.node(Coord::new(1, 0)).unwrap().unwrap();
+    assert_eq!(
+        free.who,
+        Who {
+            agent: "-".into(),
+            model: "-".into(),
+            session: "-".into()
+        }
+    );
+    assert_eq!(free.origin, s.origin());
     assert!(snap.node(Coord::leaf(2)).unwrap().is_none());
     let exact = "x".repeat(NODE - "note: ".len());
     let (_, built, snap) = s.append("t", &[msg(Kind::Note, exact.clone())]).unwrap();
@@ -340,12 +365,14 @@ fn short_messages_are_their_own_nodes() {
         snap.node(Coord::leaf(3)).unwrap().unwrap().text,
         format!("note: {exact}")
     );
-    let (built, snap) = s.put_node(Coord::leaf(2), "fake", "echo: long").unwrap();
+    let (built, snap) = s
+        .put_node(Coord::leaf(2), &fake_who(), "echo: long")
+        .unwrap();
     assert_eq!(built.len(), 1);
     assert!(snap.node(Coord::new(1, 1)).unwrap().is_none());
-    let (again, _) = s.put_node(Coord::leaf(2), "fake", "other").unwrap();
+    let (again, _) = s.put_node(Coord::leaf(2), &fake_who(), "other").unwrap();
     assert!(again.is_empty(), "built nodes never change");
-    assert!(s.put_node(Coord::new(3, 0), "fake", "x").is_err());
+    assert!(s.put_node(Coord::new(3, 0), &fake_who(), "x").is_err());
     let m = Mem::load(&s.snapshot().unwrap(), VIEW).unwrap();
     assert_eq!(m.t(), 4);
     assert!(m.all_built());
@@ -405,7 +432,8 @@ fn the_compactor_builds_in_order_and_settles() {
     let snap = s.snapshot().unwrap();
     assert!(snap.node(Coord::new(3, 0)).unwrap().is_some());
     assert!(snap.node(Coord::new(4, 0)).unwrap().is_none());
-    assert_eq!(snap.node(Coord::leaf(0)).unwrap().unwrap().model, "fake");
+    let leaf = snap.node(Coord::leaf(0)).unwrap().unwrap();
+    assert_eq!((leaf.who, leaf.origin.as_str()), (fake_who(), s.origin()));
     let loaded = Mem::load(&snap, VIEW).unwrap();
     for l in 0..4 {
         for i in 0..12 >> l {
@@ -664,16 +692,54 @@ fn a_life_through_the_cli() {
     assert!(run(d, &["zoom", "3", "99"]).stderr.contains("No part 99"));
     assert_eq!(run(d, &["config", "PART_CHARS="]).code, 0);
 
+    let origin = Store::open(d).unwrap().origin().to_string();
     let show = run(d, &["show", "40+1"]).stdout;
     assert!(show.starts_with("40+1\nts      "));
     assert!(show.contains("\nkind    note\n") && show.contains("\ntext    a short one\n"));
+    assert!(show.contains(&format!("\nkind    note\norigin  {origin}\nrepo    ")));
     let show = run(d, &["show", "0+2"]).stdout;
-    assert!(show.contains("\nmodel   fake\n") && show.contains("\ntext    join."));
+    assert!(
+        show.contains(&format!(
+            "\norigin  {origin}\nagent   fake-harness\nmodel   fake\nsession fake-session\ntext    join."
+        )),
+        "{show}"
+    );
 
     let g = run(d, &["grep", "message 3\\b"]).stdout;
     assert!(
-        g.starts_with("3+1 2020-01-02 00:00 - note: message 3 nnn"),
+        g.starts_with(&format!(
+            "3+1 2020-01-02 00:00 {origin} - note: message 3 nnn"
+        )),
         "{g}"
+    );
+    let n = |args: &[&str]| run(d, args).stdout;
+    assert_eq!(
+        n(&["grep", "message 3\\b", "--origin", "NOPE"]),
+        "No match.\n"
+    );
+    assert_eq!(
+        n(&[
+            "grep",
+            "message 3\\b",
+            "--origin",
+            &origin.to_lowercase(),
+            "-c"
+        ]),
+        "1 match.\n"
+    );
+    let all = n(&["grep", "^join", "-t", "-c"]);
+    assert_eq!(
+        n(&["grep", "^join", "-t", "-c", "--agent", "fake-harness"]),
+        all
+    );
+    assert_eq!(
+        n(&["grep", "^join", "-t", "-c", "--session", "fake-session"]),
+        all
+    );
+    assert_eq!(n(&["grep", "^join", "-t", "-c", "--origin", &origin]), all);
+    assert_eq!(
+        n(&["grep", "^join", "-t", "--agent", "other"]),
+        "No match.\n"
     );
     assert!(g.ends_with("\n1 match.\n"));
     let g = run(d, &["grep", "^join", "-t", "-c"]).stdout;
@@ -721,6 +787,67 @@ fn init_prints_the_block_and_is_idempotent() {
     );
     assert!(r.stdout.contains("ai memory zoom <id+n>"));
     assert!(!r.stdout.contains("nap"));
+}
+
+#[test]
+fn every_store_has_one_origin_stamped_on_what_it_writes() {
+    let (_tmp, d) = store();
+    let mut s = Store::open(&d).unwrap();
+    let origin = s.origin().to_string();
+    assert!(
+        Regex::new("^[0-9A-HJKMNP-TV-Z]{6}$")
+            .unwrap()
+            .is_match(&origin)
+    );
+    let config = fs::read_to_string(d.join("config")).unwrap();
+    assert!(config.contains(&format!("origin = {origin}")), "{config}");
+    assert_eq!(Store::open(&d).unwrap().origin(), origin);
+
+    let old = Message {
+        ts: "20250102T030405Z".into(),
+        origin: "OLD123".into(),
+        place: Place {
+            repo: "acme/widget".into(),
+            head: "0123456789ab".into(),
+            branch: "main".into(),
+        },
+        who: Who {
+            agent: "codex".into(),
+            model: "gpt".into(),
+            session: "s9".into(),
+        },
+        ..msg(Kind::Note, "kept as given")
+    };
+    s.append("restore", &[old.clone(), msg(Kind::Note, "stamped")])
+        .unwrap();
+    let snap = s.snapshot().unwrap();
+    assert_eq!(snap.message(0).unwrap(), old);
+    assert_eq!(snap.message(1).unwrap().origin, origin);
+    assert_eq!(snap.node(Coord::leaf(0)).unwrap().unwrap().origin, origin);
+
+    s.set_origin("NEW456").unwrap();
+    assert!(s.set_origin("a b").is_err() && s.set_origin("").is_err());
+    assert_eq!(Store::open(&d).unwrap().origin(), "NEW456");
+    s.append("t", &[msg(Kind::Note, "after")]).unwrap();
+    assert_eq!(s.snapshot().unwrap().message(2).unwrap().origin, "NEW456");
+}
+
+#[test]
+fn the_note_limit_is_a_knob_up_to_one_node() {
+    let (_tmp, d) = store();
+    assert_eq!(run(&d, &["config", "ENTRY_CHARS=10"]).code, 0);
+    assert!(
+        run(&d, &["note", "eleven char"])
+            .stderr
+            .contains("limit 10")
+    );
+    assert_eq!(run(&d, &["note", "ten chars!"]).code, 0);
+    assert!(run(&d, &["init"]).stdout.contains("max 10 bytes"));
+    assert!(
+        run(&d, &["config", "ENTRY_CHARS=507"])
+            .stderr
+            .contains("at most 506")
+    );
 }
 
 #[test]

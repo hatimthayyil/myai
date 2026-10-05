@@ -13,7 +13,7 @@ use anyhow::{Result, bail};
 
 use crate::{
     backend::{Backend, Block},
-    record::{Message, flat},
+    record::{Message, Who, flat},
     store::{AtPath, Store},
     tree::{Coord, NODE},
     view::{Mem, VIEW},
@@ -107,8 +107,8 @@ pub fn retry_text(line: &str) -> String {
 }
 
 /// Builds one node: the line the model writes, retried in the same conversation while
-/// over [`NODE`] bytes, up to [`TRIES`]; the shortest try wins.
-pub fn summarize(backend: &dyn Backend, job: &Job) -> Result<String> {
+/// over [`NODE`] bytes, up to [`TRIES`]; the shortest try wins. Returns who wrote it, and the line.
+pub fn summarize(backend: &dyn Backend, job: &Job) -> Result<(Who, String)> {
     let mut conv = backend.open(COMPACT)?;
     let mut reply = conv.say(&message(job))?;
     let mut tries: Vec<String> = Vec::new();
@@ -125,10 +125,16 @@ pub fn summarize(backend: &dyn Backend, job: &Job) -> Result<String> {
         }
         reply = conv.say(&[Block::new(retry, false)])?;
     }
-    Ok(tries
+    let who = Who {
+        agent: backend.agent().into(),
+        model: backend.model().into(),
+        session: conv.session(),
+    };
+    let line = tries
         .into_iter()
         .min_by_key(String::len)
-        .expect("one try at least"))
+        .expect("one try at least");
+    Ok((who, line))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -148,7 +154,7 @@ impl Default for Options {
     }
 }
 
-type Done = (Coord, Result<String>);
+type Done = (Coord, Result<(Who, String)>);
 type Notify = Arc<dyn Fn() + Send + Sync>;
 
 /// The pump: builds every node whose sources exist and whose context is all summaries,
@@ -281,8 +287,8 @@ impl<'s> Compactor<'s> {
 
     fn finish(&mut self, (c, r): Done) -> Result<()> {
         match r {
-            Ok(text) => {
-                let (built, snap) = self.store.put_node(c, self.backend.model(), &text)?;
+            Ok((who, text)) => {
+                let (built, snap) = self.store.put_node(c, &who, &text)?;
                 for (k, t) in built {
                     self.mem.set(k, t);
                 }

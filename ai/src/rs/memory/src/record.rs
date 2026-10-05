@@ -48,6 +48,7 @@ pub struct Who {
 pub struct Message {
     pub ts: String,
     pub kind: Kind,
+    pub origin: String,
     pub place: Place,
     pub who: Who,
     pub text: String,
@@ -56,7 +57,8 @@ pub struct Message {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Node {
     pub ts: String,
-    pub model: String,
+    pub origin: String,
+    pub who: Who,
     pub text: String,
 }
 
@@ -90,6 +92,7 @@ impl Message {
         Message {
             ts: now(),
             kind,
+            origin: String::new(),
             place: Place::default(),
             who: Who::default(),
             text: text.into(),
@@ -101,6 +104,7 @@ impl Message {
         let head = [
             self.ts.as_str(),
             self.kind.name(),
+            &self.origin,
             &p.repo,
             &p.head,
             &p.branch,
@@ -118,7 +122,7 @@ impl Message {
         let s = std::str::from_utf8(b).map_err(|_| corrupt())?;
         let (head, text) = s.split_once('\n').ok_or_else(corrupt)?;
         let f: Vec<&str> = head.split(' ').collect();
-        let [ts, kind, repo, hd, branch, agent, model, session] = f[..] else {
+        let [ts, kind, origin, repo, hd, branch, agent, model, session] = f[..] else {
             return Err(corrupt());
         };
         if !valid_ts(ts) {
@@ -127,6 +131,7 @@ impl Message {
         Ok(Message {
             ts: ts.into(),
             kind: Kind::parse(kind).ok_or_else(corrupt)?,
+            origin: origin.into(),
             place: Place {
                 repo: repo.into(),
                 head: hd.into(),
@@ -160,28 +165,36 @@ impl Message {
             .to_string()
     }
 
-    /// `<date> <hh:mm> <repo>`, UTC.
+    /// `<date> <hh:mm> <origin> <repo>`, UTC.
     pub fn stamp(&self) -> String {
-        format!("{} {} {}", date(&self.ts), time(&self.ts), self.place.repo)
+        format!(
+            "{} {} {} {}",
+            date(&self.ts),
+            time(&self.ts),
+            self.origin,
+            self.place.repo
+        )
     }
 }
 
 impl Node {
     pub fn encode(&self) -> String {
-        format!(
-            "{} {} {}",
-            field(&self.ts),
-            field(&self.model),
-            flat(&self.text)
-        )
+        let w = &self.who;
+        let head = [&self.ts, &self.origin, &w.agent, &w.model, &w.session].map(|f| field(f));
+        format!("{} {}", head.join(" "), flat(&self.text))
     }
 
     pub fn decode(line: &str) -> Option<Node> {
-        let mut f = line.splitn(3, ' ');
-        let (ts, model, text) = (f.next()?, f.next()?, f.next()?);
+        let mut f = line.splitn(6, ' ');
+        let [ts, origin, agent, model, session, text] = [(); 6].map(|_| f.next().unwrap_or(""));
         (valid_ts(ts) && !text.is_empty()).then(|| Node {
             ts: ts.into(),
-            model: model.into(),
+            origin: origin.into(),
+            who: Who {
+                agent: agent.into(),
+                model: model.into(),
+                session: session.into(),
+            },
             text: text.into(),
         })
     }
@@ -211,6 +224,7 @@ mod tests {
         Message {
             ts: "20261003T142233Z".into(),
             kind: Kind::Echo,
+            origin: "7KQ2ZD".into(),
             place: Place {
                 repo: "acme/widget".into(),
                 head: "0123456789ab".into(),
@@ -229,20 +243,24 @@ mod tests {
     fn messages_round_trip() {
         let m = message();
         let b = m.encode();
-        assert!(b.starts_with(b"20261003T142233Z echo acme/widget 0123456789ab feature/a_b "));
+        assert!(
+            b.starts_with(b"20261003T142233Z echo 7KQ2ZD acme/widget 0123456789ab feature/a_b ")
+        );
         let back = Message::decode(&b).unwrap();
+        assert_eq!(back.origin, "7KQ2ZD");
         assert_eq!(back.place.branch, "feature/a_b");
         assert_eq!(back.who.model, "-");
         assert_eq!(back.who.session, "ünï");
         assert_eq!(back.text, m.text);
         assert_eq!(back.label(), "echo: line one\nline two\n");
-        assert_eq!(back.stamp(), "2026-10-03 14:22 acme/widget");
+        assert_eq!(back.stamp(), "2026-10-03 14:22 7KQ2ZD acme/widget");
         let tz = TimeZone::fixed(jiff::tz::offset(-15));
         assert_eq!(back.time_in(&tz), "2026-10-02 23:22");
         assert_eq!(back.time_in(&TimeZone::UTC), "2026-10-03 14:22");
         assert_eq!(Message::decode(&back.encode()).unwrap(), back);
         assert!(Message::decode(b"garbage").is_err());
-        assert!(Message::decode(b"20261003T142233Z chat - - - - - -\nx").is_err());
+        assert!(Message::decode(b"20261003T142233Z chat - - - - - - -\nx").is_err());
+        assert!(Message::decode(b"20261003T142233Z note - - - - - -\nx").is_err());
         assert!(Message::decode(&[0xff, b'\n']).is_err());
     }
 
@@ -250,15 +268,26 @@ mod tests {
     fn nodes_are_one_line() {
         let n = Node {
             ts: "20261003T142233Z".into(),
-            model: "".into(),
+            origin: "7KQ2ZD".into(),
+            who: Who {
+                agent: "claude-code".into(),
+                model: "".into(),
+                session: "s 1".into(),
+            },
             text: "a\nb\r\nc".into(),
         };
         let line = n.encode();
-        assert_eq!(line, "20261003T142233Z - a b c");
+        assert_eq!(line, "20261003T142233Z 7KQ2ZD claude-code - s_1 a b c");
         let back = Node::decode(&line).unwrap();
-        assert_eq!((back.model.as_str(), back.text.as_str()), ("-", "a b c"));
+        assert_eq!(back.origin, "7KQ2ZD");
+        assert_eq!(
+            (back.who.model.as_str(), back.who.session.as_str()),
+            ("-", "s_1")
+        );
+        assert_eq!(back.text, "a b c");
+        assert_eq!(Node::decode(&back.encode()), Some(back));
         assert!(Node::decode("").is_none());
-        assert!(Node::decode("20261003T142233Z -").is_none());
+        assert!(Node::decode("20261003T142233Z O a m s").is_none());
         assert_eq!(Kind::parse("note"), Some(Kind::Note));
         assert_eq!(Kind::parse("work"), None);
     }

@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
+getrandom = "0.4.3"
 gix = { version = "0.88.0", default-features = false, features = ["anyhow", "sha1"] }
 jiff = "0.2.37"
 libc = "0.2.190"

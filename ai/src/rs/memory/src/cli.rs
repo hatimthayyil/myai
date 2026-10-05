@@ -19,12 +19,10 @@ use crate::{
     prov,
     record::{Kind, Message, midnight},
     store::{AtPath, ME, Snapshot, Store, pretty},
-    tree::{Coord, NODE},
+    tree::Coord,
     view::{Mem, VIEW},
     zoom::{page, zoom},
 };
-
-const NOTE_MAX: usize = NODE - "note: ".len();
 
 const TEMPLATE: &str = "\
 ## Memory
@@ -236,7 +234,7 @@ pub fn line_id(s: &str, t: u64) -> Result<Coord> {
     Coord::at(id, n, t).with_context(|| format!("No line {id}+{n}."))
 }
 
-fn check(text: &str, limit: usize) -> Result<&str> {
+fn check(text: &str, limit: u64) -> Result<&str> {
     let text = text.trim();
     if text.is_empty() {
         bail!("Empty. A memory is one line of text.");
@@ -247,7 +245,7 @@ fn check(text: &str, limit: usize) -> Result<&str> {
             text.matches('\n').count() + 1
         );
     }
-    let n = text.len();
+    let n = text.len() as u64;
     if n > limit {
         bail!(
             "Too long: {n} bytes, limit {limit}. Accented characters cost 2 bytes. Compress it further."
@@ -293,7 +291,7 @@ fn init(dir: &Path, out: &mut dyn Write) -> Result<ExitCode> {
     let block = TEMPLATE
         .replace("{memo}", ME)
         .replace("{data}", &at)
-        .replace("{chars}", &NOTE_MAX.to_string());
+        .replace("{chars}", &s.cfg.get(Knob::EntryChars).to_string());
     writeln!(out, "{block}")?;
     Ok(ExitCode::SUCCESS)
 }
@@ -345,7 +343,7 @@ fn wake(s: &Store, out: &mut dyn Write, k: u64, commit: Option<&str>) -> Result<
 }
 
 fn note(s: &Store, out: &mut dyn Write, text: &str, rt: &Runtime) -> Result<ExitCode> {
-    let text = check(text, NOTE_MAX)?;
+    let text = check(text, s.cfg.get(Knob::EntryChars))?;
     let cwd = std::env::current_dir().context("Cannot read the current directory.")?;
     let m = Message {
         place: prov::place(&cwd),
@@ -449,6 +447,7 @@ fn show(s: &Snapshot, out: &mut dyn Write, id: &str) -> Result<ExitCode> {
         vec![
             ("ts", m.ts),
             ("kind", m.kind.name().into()),
+            ("origin", m.origin),
             ("repo", p.repo),
             ("head", p.head),
             ("branch", p.branch),
@@ -461,7 +460,14 @@ fn show(s: &Snapshot, out: &mut dyn Write, id: &str) -> Result<ExitCode> {
         let Some(n) = s.node(c)? else {
             bail!("{c} is not summarized yet. Run: {ME} zoom {c}");
         };
-        vec![("ts", n.ts), ("model", n.model), ("text", n.text)]
+        vec![
+            ("ts", n.ts),
+            ("origin", n.origin),
+            ("agent", n.who.agent),
+            ("model", n.who.model),
+            ("session", n.who.session),
+            ("text", n.text),
+        ]
     };
     writeln!(out, "{c}")?;
     for (k, v) in fields {

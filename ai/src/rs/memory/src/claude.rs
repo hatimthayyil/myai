@@ -323,6 +323,10 @@ impl ClaudeCode {
 }
 
 impl Backend for ClaudeCode {
+    fn agent(&self) -> &str {
+        "claude-code"
+    }
+
     fn model(&self) -> &str {
         &self.model
     }
@@ -338,7 +342,11 @@ impl Backend for ClaudeCode {
                 }
             },
         )?;
-        Ok(Box::new(Session { proc, lines }))
+        Ok(Box::new(Session {
+            proc,
+            lines,
+            id: String::new(),
+        }))
     }
 
     fn stop(&self) {
@@ -349,6 +357,7 @@ impl Backend for ClaudeCode {
 struct Session {
     proc: Proc,
     lines: std::sync::mpsc::Receiver<String>,
+    id: String,
 }
 
 /// A stream-json user message.
@@ -379,12 +388,6 @@ pub fn reply(ev: &Value) -> Result<String> {
     Ok(text)
 }
 
-/// The reply a stream-json `result` line carries; `None` for any other line.
-pub fn result(line: &str) -> Option<Result<String>> {
-    let ev: Value = serde_json::from_str(line).ok()?;
-    (ev["type"] == "result").then(|| reply(&ev))
-}
-
 pub fn tail(s: &str, n: usize) -> &str {
     let s = s.trim();
     &s[s.ceil_char_boundary(s.len().saturating_sub(n))..]
@@ -398,8 +401,14 @@ impl Conversation for Session {
             let wait = deadline.saturating_duration_since(Instant::now());
             match self.lines.recv_timeout(wait) {
                 Ok(line) => {
-                    if let Some(r) = result(&line) {
-                        return r;
+                    let Ok(ev) = serde_json::from_str::<Value>(&line) else {
+                        continue;
+                    };
+                    if let Some(id) = ev["session_id"].as_str() {
+                        self.id = id.into();
+                    }
+                    if ev["type"] == "result" {
+                        return reply(&ev);
                     }
                 }
                 Err(RecvTimeoutError::Timeout) => {
@@ -408,6 +417,10 @@ impl Conversation for Session {
                 Err(RecvTimeoutError::Disconnected) => bail!("{}", self.proc.failure()),
             }
         }
+    }
+
+    fn session(&self) -> String {
+        self.id.clone()
     }
 }
 
@@ -475,22 +488,16 @@ mod tests {
             "ephemeral"
         );
         assert!(v["message"]["content"][1].get("cache_control").is_none());
-        assert!(result(r#"{"type":"assistant"}"#).is_none());
-        assert!(result("not json").is_none());
+        let result = |line: &str| reply(&serde_json::from_str(line).unwrap());
         let ok = result(
             r#"{"type":"result","is_error":false,"result":" a line ","stop_reason":"end_turn"}"#,
         );
-        assert_eq!(ok.unwrap().unwrap(), " a line ");
+        assert_eq!(ok.unwrap(), " a line ");
         let err = result(r#"{"type":"result","is_error":true,"subtype":"error_max_turns"}"#);
-        assert!(
-            err.unwrap()
-                .unwrap_err()
-                .to_string()
-                .contains("error_max_turns")
-        );
+        assert!(err.unwrap_err().to_string().contains("error_max_turns"));
         let refused =
             result(r#"{"type":"result","is_error":false,"result":"","stop_reason":"refusal"}"#);
-        assert!(refused.unwrap().is_err());
+        assert!(refused.is_err());
     }
 
     #[test]

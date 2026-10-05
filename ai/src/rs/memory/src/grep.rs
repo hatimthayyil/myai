@@ -38,6 +38,8 @@ pub struct Grep {
     since: Option<jiff::civil::Date>,
     #[arg(long, value_enum, help = "only messages of this kind")]
     kind: Option<Kind>,
+    #[arg(long, help = "only from this store")]
+    origin: Option<String>,
     #[arg(long, help = "only by this agent")]
     agent: Option<String>,
     #[arg(long, help = "only from this session")]
@@ -142,20 +144,28 @@ impl Grep {
             .map_err(|e| anyhow!("bad regex: {e}"))
     }
 
-    fn admits(&self, since: &str, m: &Message) -> bool {
+    fn admits(&self, since: &str, ts: &str, origin: &str, who: &Who) -> bool {
         let is = |want: &Option<String>, have: &str| {
             want.as_deref().is_none_or(|w| have.eq_ignore_ascii_case(w))
         };
-        let Who { agent, session, .. } = &m.who;
-        m.ts.as_str() >= since
+        ts >= since
+            && is(&self.origin, origin)
+            && is(&self.agent, &who.agent)
+            && is(&self.session, &who.session)
+    }
+
+    fn admits_message(&self, since: &str, m: &Message) -> bool {
+        let is_repo = self
+            .repo
+            .as_deref()
+            .is_none_or(|r| m.place.repo.eq_ignore_ascii_case(r));
+        self.admits(since, &m.ts, &m.origin, &m.who)
             && self.kind.is_none_or(|k| k == m.kind)
-            && is(&self.repo, &m.place.repo)
-            && is(&self.agent, agent)
-            && is(&self.session, session)
+            && is_repo
     }
 
     fn message_only(&self) -> bool {
-        self.kind.is_some() || self.repo.is_some() || self.agent.is_some() || self.session.is_some()
+        self.kind.is_some() || self.repo.is_some()
     }
 
     fn command(&self) -> String {
@@ -172,6 +182,7 @@ impl Grep {
         let opts = [
             ("--since", self.since.map(|d| d.to_string())),
             ("--kind", self.kind.map(|k| k.name().into())),
+            ("--origin", self.origin.clone()),
             ("--agent", self.agent.clone()),
             ("--session", self.session.clone()),
             ("--repo", self.repo.clone()),
@@ -278,7 +289,7 @@ pub fn grep(s: &Snapshot, out: &mut dyn Write, g: &Grep) -> Result<ExitCode> {
     let log = &mut pages[0];
     let (mut ring, mut after) = (VecDeque::new(), 0);
     s.scan(end, |i, m| {
-        if below((i, 1)) && g.admits(&since, &m) && pat.is_match(&m.text) {
+        if below((i, 1)) && g.admits_message(&since, &m) && pat.is_match(&m.text) {
             hits += 1;
             let first = ring.front().map_or(i, |&(j, _)| j);
             let mut lines: Vec<_> = ring.drain(..).map(|(_, l)| l).collect();
@@ -305,7 +316,8 @@ pub fn grep(s: &Snapshot, out: &mut dyn Write, g: &Grep) -> Result<ExitCode> {
             let Some(n) = n.filter(|_| c.end() <= end) else {
                 continue;
             };
-            if below(key(c)) && n.ts >= since && pat.is_match(&n.text) {
+            if below(key(c)) && g.admits(&since, &n.ts, &n.origin, &n.who) && pat.is_match(&n.text)
+            {
                 hits += 1;
                 page.push(Unit::new(c, None, vec![format!("{c}|{}", n.text)]));
             }
