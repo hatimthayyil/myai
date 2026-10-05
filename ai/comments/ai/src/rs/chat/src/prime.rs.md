@@ -1,0 +1,3 @@
+# prime.rs
+
+Cost optimization only (cache note, §Priming). The call is the master's exact argv plus `DISABLE_PROMPT_CACHING=1`; its message is the view cut by `blocks` (after the last line end before 50k/80k/100k chars), every block marked, so the last mark sits at the view end, then an unmarked `ok`. A turn sends the same `blocks` unmarked. The first `message_start` means the API took the request: the view is cached, the call is killed. A `result`, an early exit or 30 s without a response is a failure; the session reports the first one and goes on unprimed (`failed(view)` lets the waiting turn start). A view primed under 270 s ago is fresh. A new view replaces a priming in flight.

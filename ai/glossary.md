@@ -14,7 +14,13 @@
 - `backend`: the compactor's model access (`Backend`/`Conversation`); now only Claude Code (`claude -p`, Sonnet, medium effort).
 - `wake`: print the view, paged into parts; later parts pinned to the first part's commit.
 - `part`: one page of `wake` output, bounded by `PART_CHARS`/`PART_LINES`.
-- `zoom`: open `id+n` into its two children; `id+1` gives the message whole.
+- `zoom`: open `id+n` into its two children; `id+1` gives the original message in bounded pages (`part`, from 1).
+- `chat`: `ai chat`, plain terminal: a fresh Claude Code process per turn (Opus, high effort by default; `--model`, `--effort`), sent the settled view and the user's whole message. Ctrl-C cancels a turn; Ctrl-D exits; on a pipe, the end of input finishes the queued turns first.
+- `priming`: a throwaway master call (same argv, `DISABLE_PROMPT_CACHING=1`) with every view block marked, killed at its first `message_start`; writes the view into the prompt cache so the turn reads it. Before a turn unless the view was primed under 270 s ago; in the background once per view change after 1 s idle. Failures are reported once and never block a turn.
+- `turn`: one fresh master call for a batch of user messages: settle, prime, render the view, log the messages, then log every reply (`talk`), tool call (`tool`) and result (`echo`, capped at 30,000 chars) as it streams; killed at its first `result`.
+- `settle`: wait until every line of the view is a summary; a turn starts only then. Cancellable.
+- `mid-run message`: a message typed while a turn runs; written to its stdin and logged when Claude takes it (replay). Untaken ones get a fresh turn after a `result`, or are logged unanswered after a cancel.
+- `MCP server`: `ai chat mcp`, stdio, read-only: `zoom` (paged by `PART_CHARS`) and `date` on the latest commit; tools reach the model as `mcp__memory__zoom`, `mcp__memory__date`.
 - `show`: every field of one message or node.
 - `grep`: rg-style regex search over every message's text (smart-case, `-F`, filters incl. `--kind`; `-t` adds nodes), newest page first; `--before <id+n>` pages back.
 - `snapshot`: the memory as of one commit; every command reads one.

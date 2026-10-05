@@ -149,6 +149,7 @@ impl Default for Options {
 }
 
 type Done = (Coord, Result<String>);
+type Notify = Arc<dyn Fn() + Send + Sync>;
 
 /// The pump: builds every node whose sources exist and whose context is all summaries,
 /// up to `jobs` at once, each through `backend` on its own thread. One per memory.
@@ -164,6 +165,7 @@ pub struct Compactor<'s> {
     built: u64,
     tx: Sender<Done>,
     rx: Receiver<Done>,
+    notify: Option<Notify>,
     _lock: File,
 }
 
@@ -191,6 +193,7 @@ impl<'s> Compactor<'s> {
             built: 0,
             tx,
             rx,
+            notify: None,
             _lock: lock,
         }))
     }
@@ -211,6 +214,22 @@ impl<'s> Compactor<'s> {
 
     pub fn busy(&self) -> usize {
         self.busy.len()
+    }
+
+    /// Calls `f` from a job's thread each time a call ends, so an event loop knows to [`Self::step`].
+    pub fn notify(&mut self, f: impl Fn() + Send + Sync + 'static) {
+        self.notify = Some(Arc::new(f));
+    }
+
+    /// When the earliest failed node may be tried again.
+    pub fn next_retry(&self) -> Option<Instant> {
+        self.waits.iter().map(|w| w.0).min()
+    }
+
+    /// Takes in what other processes wrote since, then pumps.
+    pub fn refresh(&mut self) -> Result<()> {
+        self.mem.absorb(&self.store.snapshot()?)?;
+        self.pump()
     }
 
     /// Appends messages to the log and the view, then pumps.
@@ -248,9 +267,13 @@ impl<'s> Compactor<'s> {
             let job = self.job(c)?;
             self.busy.insert(c);
             let (backend, tx) = (self.backend.clone(), self.tx.clone());
+            let notify = self.notify.clone();
             thread::spawn(move || {
                 let r = summarize(&*backend, &job);
                 let _ = tx.send((job.node, r));
+                if let Some(f) = notify {
+                    f();
+                }
             });
         }
         Ok(())
@@ -279,19 +302,19 @@ impl<'s> Compactor<'s> {
         Ok(())
     }
 
-    /// Waits up to `timeout` for a call to end or a failed node's wait to pass, then pumps.
+    /// Waits up to `timeout` for a call to end or a failed node's wait to pass, takes in
+    /// every call that ended, then pumps.
     pub fn step(&mut self, timeout: Duration) -> Result<()> {
-        let now = Instant::now();
-        let wait = self
-            .waits
-            .iter()
-            .map(|w| w.0.saturating_duration_since(now))
-            .min()
-            .map_or(timeout, |w| w.min(timeout));
+        let wait = self.next_retry().map_or(timeout, |at| {
+            at.saturating_duration_since(Instant::now()).min(timeout)
+        });
         match self.rx.recv_timeout(wait) {
             Ok(done) => self.finish(done)?,
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => unreachable!("the compactor holds a sender"),
+        }
+        while let Ok(done) = self.rx.try_recv() {
+            self.finish(done)?;
         }
         let now = Instant::now();
         let busy = &mut self.busy;
@@ -320,8 +343,7 @@ impl<'s> Compactor<'s> {
     /// Runs until no node can be built on the latest snapshot; `each` after every step.
     pub fn run(&mut self, mut each: impl FnMut(&mut Self) -> Result<()>) -> Result<()> {
         loop {
-            self.mem.absorb(&self.store.snapshot()?)?;
-            self.pump()?;
+            self.refresh()?;
             if self.busy.is_empty() {
                 return Ok(());
             }
@@ -330,6 +352,12 @@ impl<'s> Compactor<'s> {
                 each(self)?;
             }
         }
+    }
+}
+
+impl Drop for Compactor<'_> {
+    fn drop(&mut self) {
+        self.backend.stop();
     }
 }
 

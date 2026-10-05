@@ -1,0 +1,11 @@
+# session.rs
+
+One event loop owns the log (through the compactor), the master turn, the primer and the queue. It blocks on its channel until an event or the nearest deadline (idle debounce, priming timeout, compactor retry); no polling. Compactor jobs wake it with `Event::Compacted` (`Compactor::notify`). Events already in the channel are handled as one batch before anything starts, so lines that arrive together (a paste) become one turn, joined by a blank line.
+
+- Turn start: `refresh` (absorb notes other sessions committed), settle (every view line built; prints "waiting for N summaries" once; cancellable), prime unless fresh or failed for this view, render, then log the queued messages and send the view blocks unmarked plus the joined text. Render happens before logging (spec §7).
+- Mid-run input goes to the call's stdin; it is logged as `user` when a replay shows it taken. At the first `result` the call is killed (`Spawner` stops in the reader thread, before a follow-up turn can run) and untaken messages go back to the queue front. After a cancel or a crash they are logged unanswered (no requeue loop).
+- Cancel (Ctrl-C) kills the call but keeps mapping its events until its output ends, so a tool result that still arrives is logged; input typed meanwhile queues for the next turn. Exit (Ctrl-D, SIGTERM/SIGHUP) kills at once and logs what was never answered. End (stdin closed on a pipe) finishes the queued work, then leaves.
+- Priming: before a turn when the view is not fresh (270 s), and in the background once per view change after `IDLE` (1 s) unchanged with nothing running. Never at startup, never again for an unchanged view: no keep-alive pings (spec §8).
+- Output is plain: streamed text as it comes, status lines on their own line, control characters dropped.
+
+Tests run fake `claude` bash scripts: turn history, replay/requeue, tools/results/no thoughts, follow-up kill, prime failure, notes arriving during priming, cancel while settling, cancel mid-run (late tool result logged, untaken message logged), batched input with End, the priming schedule (none at start, one per change, reused when fresh, identical blocks), EOF with untaken input, and 1 MB writes to a child that never reads stdin.

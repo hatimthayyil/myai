@@ -150,6 +150,16 @@ impl Message {
         date(&self.ts)
     }
 
+    /// `YYYY-MM-DD HH:MM` in the time zone `tz`.
+    pub fn time_in(&self, tz: &TimeZone) -> String {
+        let at = DateTime::strptime(TS, &self.ts)
+            .and_then(|dt| dt.to_zoned(TimeZone::UTC))
+            .expect("a decoded timestamp");
+        at.with_time_zone(tz.clone())
+            .strftime("%Y-%m-%d %H:%M")
+            .to_string()
+    }
+
     /// `<date> <hh:mm> <repo>`, UTC.
     pub fn stamp(&self) -> String {
         format!("{} {} {}", date(&self.ts), time(&self.ts), self.place.repo)
@@ -227,6 +237,9 @@ mod tests {
         assert_eq!(back.text, m.text);
         assert_eq!(back.label(), "echo: line one\nline two\n");
         assert_eq!(back.stamp(), "2026-10-03 14:22 acme/widget");
+        let tz = TimeZone::fixed(jiff::tz::offset(-15));
+        assert_eq!(back.time_in(&tz), "2026-10-02 23:22");
+        assert_eq!(back.time_in(&TimeZone::UTC), "2026-10-03 14:22");
         assert_eq!(Message::decode(&back.encode()).unwrap(), back);
         assert!(Message::decode(b"garbage").is_err());
         assert!(Message::decode(b"20261003T142233Z chat - - - - - -\nx").is_err());

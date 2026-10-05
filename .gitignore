@@ -16,3 +16,6 @@ devenv.local.yaml
 # ai memory
 /.ai/memory/
 /ai/src/rs/*/target
+
+# Claude Code
+/.claude/

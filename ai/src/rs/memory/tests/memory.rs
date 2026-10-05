@@ -641,6 +641,28 @@ fn a_life_through_the_cli() {
     assert_eq!(run(d, &["zoom", "0+64"]).stderr, "No line 0+64.");
     assert_eq!(run(d, &["zoom", "1+2"]).stderr, "No line 1+2.");
     assert!(run(d, &["zoom", "x"]).stderr.contains("not an id+n"));
+    let whole = run(d, &["zoom", "3"]).stdout;
+    assert!(whole.len() > 40, "{whole}");
+    assert_eq!(run(d, &["config", "PART_CHARS=10"]).code, 0);
+    let mut parts = String::new();
+    for k in 1.. {
+        let p = run(d, &["zoom", "3", &k.to_string()]).stdout;
+        let next = Regex::new(&format!(
+            r"\nPart {k} of \d+\. Next: ai memory zoom 3\+1 {}\n$",
+            k + 1
+        ))
+        .unwrap();
+        match next.find(&p) {
+            Some(m) => parts += &p[..m.start()],
+            None => {
+                parts += &p;
+                break;
+            }
+        }
+    }
+    assert_eq!(parts, whole);
+    assert!(run(d, &["zoom", "3", "99"]).stderr.contains("No part 99"));
+    assert_eq!(run(d, &["config", "PART_CHARS="]).code, 0);
 
     let show = run(d, &["show", "40+1"]).stdout;
     assert!(show.starts_with("40+1\nts      "));

@@ -492,3 +492,165 @@ fn a_note_naps_in_the_background() {
         "{out}"
     );
 }
+
+const FAKE_MASTER: &str = r#"#!/usr/bin/env bash
+d="$(dirname "$0")"
+k=0
+while ! mkdir "$d/call$k" 2>/dev/null; do k=$((k+1)); done
+c="$d/call$k"
+printf '%s\n' "$@" > "$c/argv"
+printf '%s' "${DISABLE_PROMPT_CACHING:-}" > "$c/disable"
+while [ $# -gt 0 ]; do
+  if [ "$1" = --system-prompt-file ]; then cp "$2" "$c/system"; fi
+  shift
+done
+read -r initial
+printf '%s\n' "$initial" > "$c/in"
+if [ "${DISABLE_PROMPT_CACHING:-}" = 1 ]; then
+  echo '{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"cache_read_input_tokens":0,"cache_creation_input_tokens":9}}}}'
+  sleep 60
+fi
+echo '{"type":"system","subtype":"init","model":"claude-fake","mcp_servers":[{"name":"memory","status":"connected"}]}'
+echo '{"type":"user","isReplay":true}'
+echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__memory__zoom","input":{"id":0,"n":1}}]}}'
+echo '{"type":"user","message":{"content":[{"type":"tool_result","content":"0+0|note: the code word is papaya"}]}}'
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"It is papaya."}]}}'
+echo '{"type":"result","result":"It is papaya.","usage":{"input_tokens":1,"cache_read_input_tokens":9,"cache_creation_input_tokens":2,"output_tokens":3}}'
+sleep 60
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"a follow-up turn"}]}}'
+"#;
+
+#[test]
+fn a_chat_turn_end_to_end_with_a_fake_claude() {
+    let s = Sandbox::new();
+    assert!(s.ai(&["init"]).status.success());
+    assert!(s.ai(&["note", "the code word is papaya"]).status.success());
+    let bin = s.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let claude = bin.join("claude");
+    fs::write(&claude, FAKE_MASTER).unwrap();
+    fs::set_permissions(&claude, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    fs::create_dir(s.path().join("home/.claude")).unwrap();
+    fs::write(s.path().join("home/.claude/CLAUDE.md"), "Mine.\n").unwrap();
+    let mut c = Command::new(env!("CARGO_BIN_EXE_ai"));
+    s.isolate(&mut c);
+    let mut chat = c
+        .current_dir(s.path())
+        .args(["chat", "--model", "sonnet"])
+        .env("AI_MEMORY_DIR", s.store())
+        .env(
+            "PATH",
+            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    {
+        use std::io::Write;
+        let mut stdin = chat.stdin.take().unwrap();
+        stdin.write_all(b"what is the code word?\n").unwrap();
+    }
+    let r = chat.wait_with_output().unwrap();
+    let out = text(&r.stdout);
+    assert!(r.status.success(), "{}", text(&r.stderr));
+    assert!(
+        out.starts_with("<chat>\n0+1|note: the code word is papaya\n</chat>\n"),
+        "{out}"
+    );
+    assert!(out.contains("primed: 0 read · 9 write"), "{out}");
+    assert!(out.contains("1 in · 9 read · 2 write · 3 out"), "{out}");
+    let logged: Vec<_> = s.memories().iter().map(Message::label).collect();
+    assert_eq!(
+        logged,
+        [
+            "note: the code word is papaya",
+            "user: what is the code word?",
+            r#"tool: mcp__memory__zoom {"id":0,"n":1}"#,
+            "echo: 0+0|note: the code word is papaya",
+            "talk: It is papaya.",
+        ]
+    );
+    let m = &s.memories()[4];
+    assert_eq!(
+        (m.who.agent.as_str(), m.who.model.as_str()),
+        ("ai-chat", "claude-fake")
+    );
+
+    let call = |k: usize, f: &str| fs::read_to_string(bin.join(format!("call{k}/{f}"))).unwrap();
+    assert!(
+        !bin.join("call2").exists(),
+        "a prime and a turn, nothing else"
+    );
+    assert_eq!(
+        (call(0, "disable"), call(1, "disable")),
+        ("1".into(), String::new())
+    );
+    assert_eq!(call(0, "argv"), call(1, "argv"));
+    let argv: Vec<_> = call(1, "argv").lines().map(String::from).collect();
+    let after = |flag: &str| argv[argv.iter().position(|a| a == flag).unwrap() + 1].clone();
+    assert_eq!(after("--model"), "sonnet");
+    assert_eq!(after("--permission-mode"), "dontAsk");
+    assert!(after("--allowedTools").ends_with(",mcp__memory__zoom,mcp__memory__date"));
+    let mcp: serde_json::Value = serde_json::from_str(&after("--mcp-config")).unwrap();
+    let server = &mcp["mcpServers"]["memory"];
+    assert_eq!(server["command"], env!("CARGO_BIN_EXE_ai"));
+    assert_eq!(server["args"], serde_json::json!(["chat", "mcp"]));
+    assert_eq!(server["env"]["AI_MEMORY_DIR"], s.store().to_str().unwrap());
+    let system = call(1, "system");
+    assert!(system.starts_with("You are MyAI") && system.ends_with("\n\nMine."));
+    let blocks = |k: usize| -> Vec<serde_json::Value> {
+        let m: serde_json::Value = serde_json::from_str(&call(k, "in")).unwrap();
+        m["message"]["content"].as_array().unwrap().clone()
+    };
+    let (prime, turn) = (blocks(0), blocks(1));
+    assert_eq!(prime[0]["text"], turn[0]["text"]);
+    assert_eq!(prime[0]["cache_control"]["type"], "ephemeral");
+    assert!(turn[0].get("cache_control").is_none());
+    assert_eq!(
+        (prime[1]["text"].as_str(), turn[1]["text"].as_str()),
+        (Some("ok"), Some("what is the code word?"))
+    );
+
+    let mut c = Command::new(env!("CARGO_BIN_EXE_ai"));
+    s.isolate(&mut c);
+    let mut mcp = c
+        .args(["chat", "mcp"])
+        .env("AI_MEMORY_DIR", s.store())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    {
+        use std::io::Write;
+        let mut stdin = mcp.stdin.take().unwrap();
+        for req in [
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"zoom","arguments":{"id":4,"n":1}}}"#,
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"zoom","arguments":{"id":0,"n":4}}}"#,
+            r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"date","arguments":{"id":9}}}"#,
+        ] {
+            writeln!(stdin, "{req}").unwrap();
+        }
+    }
+    let r = mcp.wait_with_output().unwrap();
+    let replies: Vec<serde_json::Value> = text(&r.stdout)
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let said = |k: usize| {
+        replies[k]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(replies[0]["result"]["serverInfo"]["name"], "memory");
+    assert_eq!(said(1), "4+0|talk: It is papaya.");
+    assert!(
+        said(2).starts_with("0+2|note: the code word is papaya user: what is"),
+        "{}",
+        said(2)
+    );
+    assert_eq!(said(3), "No message 9.");
+}

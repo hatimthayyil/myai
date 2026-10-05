@@ -15,7 +15,22 @@ dependencies = [
 name = "ai"
 version = "0.3.0"
 dependencies = [
+ "ai-chat",
  "ai-memory",
+]
+
+[[package]]
+name = "ai-chat"
+version = "0.3.0"
+dependencies = [
+ "ai-memory",
+ "anyhow",
+ "clap",
+ "jiff",
+ "libc",
+ "serde_json",
+ "signal-hook",
+ "tempfile",
 ]
 
 [[package]]
@@ -26,6 +41,7 @@ dependencies = [
  "clap",
  "gix",
  "jiff",
+ "libc",
  "regex",
  "serde_json",
  "tempfile",
@@ -1137,6 +1153,7 @@ version = "0.3.0"
 dependencies = [
  "ai",
  "clap",
+ "serde_json",
  "tempfile",
 ]
 
@@ -1354,6 +1371,26 @@ name = "sha1dc"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c5b0ebf6537e3e8db8bb7d21ecb6d7399738c953c757945c6b95e46c4e95df7b"
+
+[[package]]
+name = "signal-hook"
+version = "0.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b29ffa27d3d59a049bb328258de100f8012848d1b08d444e08bbc02ac468435e"
+dependencies = [
+ "libc",
+ "signal-hook-registry",
+]
+
+[[package]]
+name = "signal-hook-registry"
+version = "1.4.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
+dependencies = [
+ "errno",
+ "libc",
+]
 
 [[package]]
 name = "simdutf8"

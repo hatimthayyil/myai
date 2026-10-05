@@ -21,7 +21,7 @@ use crate::{
     store::{AtPath, ME, Snapshot, Store, pretty},
     tree::{Coord, NODE},
     view::{Mem, VIEW},
-    zoom::zoom,
+    zoom::{page, zoom},
 };
 
 const NOTE_MAX: usize = NODE - "note: ".len();
@@ -109,6 +109,8 @@ enum Command {
     Zoom {
         #[arg(help = "a line's id+n, as printed: 2184+8, or 7+1 for message 7")]
         id: String,
+        #[arg(help = "the part of a long message to show, as printed")]
+        part: Option<u64>,
     },
     #[command(about = "show where one message or summary came from.")]
     Show {
@@ -200,7 +202,7 @@ impl Cli {
             Command::Note { text } => note(&s, out, &text, rt),
             Command::Nap => nap(&s, out, rt),
             Command::Grep(g) => grep(&s.snapshot()?, out, &g),
-            Command::Zoom { id } => zoom_cmd(&s.snapshot()?, out, &id),
+            Command::Zoom { id, part } => zoom_cmd(&s.snapshot()?, out, &id, part.unwrap_or(1)),
             Command::Show { id } => show(&s.snapshot()?, out, &id),
             Command::Config { sets } => config(&s, out, &sets),
             Command::Import { file } => import(&s, out, &file),
@@ -368,13 +370,9 @@ fn pending(s: &Store) -> Result<bool> {
 }
 
 fn nap(s: &Store, out: &mut dyn Write, rt: &Runtime) -> Result<ExitCode> {
-    let (mut backend, mut built) = (None, 0);
+    let mut built = 0;
     while pending(s)? {
-        let model = match &backend {
-            Some(b) => Arc::clone(b),
-            None => backend.insert((rt.backend)()?).clone(),
-        };
-        let Some(mut c) = Compactor::new(s, model, rt.opts)? else {
+        let Some(mut c) = Compactor::new(s, (rt.backend)()?, rt.opts)? else {
             writeln!(out, "{BUSY}")?;
             return Ok(ExitCode::SUCCESS);
         };
@@ -430,11 +428,15 @@ fn config(s: &Store, out: &mut dyn Write, sets: &[String]) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn zoom_cmd(s: &Snapshot, out: &mut dyn Write, id: &str) -> Result<ExitCode> {
+fn zoom_cmd(s: &Snapshot, out: &mut dyn Write, id: &str, part: u64) -> Result<ExitCode> {
     let c = line_id(id, s.log_len()?)?;
-    match zoom(s, c.id(), c.n())? {
-        Some(text) => writeln!(out, "{text}")?,
-        None => bail!("No line {c}."),
+    let Some(text) = zoom(s, c.id(), c.n())? else {
+        bail!("No line {c}.");
+    };
+    let (text, n) = page(&text, s.cfg().get(Knob::PartChars), part)?;
+    writeln!(out, "{}", text.strip_suffix('\n').unwrap_or(text))?;
+    if part < n {
+        writeln!(out, "Part {part} of {n}. Next: {ME} zoom {c} {}", part + 1)?;
     }
     Ok(ExitCode::SUCCESS)
 }

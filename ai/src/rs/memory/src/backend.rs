@@ -23,6 +23,9 @@ pub trait Backend: Send + Sync {
 
     /// A new conversation under the system prompt `system`.
     fn open(&self, system: &str) -> Result<Box<dyn Conversation>>;
+
+    /// Ends every conversation still open.
+    fn stop(&self) {}
 }
 
 /// One conversation: each user message gets the model's reply, in the same context.
