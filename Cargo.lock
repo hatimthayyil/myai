@@ -43,6 +43,7 @@ dependencies = [
  "gix",
  "jiff",
  "libc",
+ "memchr",
  "regex",
  "serde_json",
  "tempfile",

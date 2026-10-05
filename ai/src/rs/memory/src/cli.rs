@@ -46,6 +46,10 @@ something new, or something worth keeping happens. That covers a task
 worth real effort, a fact or insight the user teaches you, anything you
 learn about their life (even indirectly), any event of lasting effect.
 
+Write only what happened or what you learned: the tool records the time,
+machine, repo, branch, agent, model and session of every note, so never
+put a date, repo or session in it.
+
 Do not register redundant memories.
 
 Never edit or delete anything under `{data}`: the tool manages it.

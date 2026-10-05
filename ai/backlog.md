@@ -12,3 +12,4 @@
   - Sharing: one ref per person (`refs/ai/memory/<person>`) on the project remote; teammates' refs readable.
   - Open: who decides the repo copy (agent `note --repo` vs classifier, below); budget split; how teammates' refs appear (wake, grep/zoom, or not yet); creation and push policy; `<person>` identity; scope prefixes on ids (`u#`, `r#`).
 - Classifier ("Jev type model") to pick the notes that also go to repo memory: repo-local and not personal. Deferred until repo memory exists.
+- `ai chat`: test `session::tests::a_cancel_logs_what_the_call_still_reports_and_what_it_never_took` is flaky: failed once (2026-10-06) and the test binary then hung; passed 6 reruns. Find the race and make it deterministic.

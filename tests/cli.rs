@@ -10,8 +10,10 @@ use std::{
 use ai::memory::{Coord, Message, REF, Store};
 use tempfile::TempDir;
 
-const ISOLATE: [&str; 17] = [
+const ISOLATE: [&str; 19] = [
     "AI_MEMORY_DIR",
+    "CLAUDE_CONFIG_DIR",
+    "CODEX_HOME",
     "AI_AGENT",
     "AI_MODEL",
     "AI_SESSION",
@@ -188,6 +190,33 @@ fn parallel_processes_lose_nothing() {
     assert!(all.windows(2).all(|w| w[0].ts <= w[1].ts));
     let log = s.store_git(&["log", "--format=%s", REF]);
     assert_eq!(log.lines().filter(|l| *l == "note").count(), p);
+}
+
+#[test]
+fn the_model_comes_from_the_session_transcript() {
+    let s = Sandbox::new();
+    assert!(s.ai(&["init"]).status.success());
+    let dir = s.path().join("home/.claude/projects/-started-elsewhere");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("sess-9.jsonl"),
+        concat!(
+            r#"{"type":"assistant","message":{"model":"claude-opus-5-5","role":"assistant"}}"#,
+            "\n",
+            r#"{"type":"user","message":{"content":"run it"}}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+    let r = s
+        .cmd(s.path(), Some(&s.store()))
+        .args(["note", "the model is found"])
+        .env("CLAUDECODE", "1")
+        .env("CLAUDE_CODE_SESSION_ID", "sess-9")
+        .output()
+        .unwrap();
+    assert!(r.status.success(), "{}", text(&r.stderr));
+    assert_eq!(s.memories()[0].who.model, "claude-opus-5-5");
 }
 
 #[test]
