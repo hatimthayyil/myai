@@ -1,0 +1,182 @@
+ai/src/rs/chat/src/prompt.rs
+  s_18532c9e70c1e5::t_857a21b58b4d6d 1-13,15-74
+  s_18532c9e70c1e5::t_84c13dfa7e25f5 14
+ai/src/rs/chat/src/master.rs
+  s_18532c9e70c1e5::t_fb8da11458e58e 69-70
+  s_18532c9e70c1e5::t_c42938685fe635 130,134-135,137,143-144,146-150,153
+  s_18532c9e70c1e5::t_857a21b58b4d6d 1-40,42-61,63-68,71-129,131-132,139-142,151-152,154-156
+  s_18532c9e70c1e5::t_43d1e07ed10281 41,62,133,136,138,145
+ai/comments/ai/src/rs/chat/src/stream.rs.md
+  s_a2bb6566b3fc43::t_0849afd89593b4 4-5
+  s_18532c9e70c1e5::t_a95d6d549de673 1-3
+ai/backlog.md
+  s_a2bb6566b3fc43::t_0849afd89593b4 5-8
+ai/comments/ai/src/rs/chat/src/prompt.rs.md
+  s_18532c9e70c1e5::t_a95d6d549de673 1-3
+ai/src/rs/memory/src/compact.rs
+  s_18532c9e70c1e5::t_857a21b58b4d6d 152,168,196,219-234,270,274-276,305-306,308-310,316-318,346,358-361
+  s_18532c9e70c1e5::t_2e8b1491cafdd9 362-363
+ai/comments/ai/src/rs/memory/src/cli.rs.md
+  s_a2bb6566b3fc43::t_0849afd89593b4 6
+  s_18532c9e70c1e5::t_4eae07cad6be15 8
+ai/comments/ai/src/rs/chat/src/lib.rs.md
+  s_18532c9e70c1e5::t_a95d6d549de673 1-3
+ai/comments/tests/cli.rs.md
+  s_a2bb6566b3fc43::t_0849afd89593b4 6-7
+ai/src/rs/chat/prompts/view_doc.txt
+  s_18532c9e70c1e5::t_857a21b58b4d6d 1-19
+ai/comments/ai/src/rs/memory/src/compact.rs.md
+  s_18532c9e70c1e5::t_604c9da8342d5c 11
+ai/comments/ai/src/rs/memory/src/lib.rs.md
+  s_18532c9e70c1e5::t_75d61e8a1503b3 1-3
+ai/src/rs/memory/src/zoom.rs
+  s_18532c9e70c1e5::t_857a21b58b4d6d 1,26-72
+ai/comments/ai/src/rs/memory/src/prov.rs.md
+  s_18532c9e70c1e5::t_604c9da8342d5c 7
+ai/src/rs/memory/src/prov.rs
+  s_18532c9e70c1e5::t_857a21b58b4d6d 33-37
+ai/src/rs/memory/src/record.rs
+  s_18532c9e70c1e5::t_857a21b58b4d6d 153-162,240-242
+ai/src/rs/memory/tests/memory.rs
+  s_18532c9e70c1e5::t_857a21b58b4d6d 644-665
+ai/src/rs/memory/src/cli.rs
+  s_a2bb6566b3fc43::t_0849afd89593b4 373,375
+  s_18532c9e70c1e5::t_857a21b58b4d6d 24,112-113,205,431,433-439
+ai/src/rs/chat/tests/fixtures/turn-tools.jsonl
+  s_a2bb6566b3fc43::t_0849afd89593b4 1-64
+ai/comments/ai/src/rs/ai/Cargo.toml.md
+  s_18532c9e70c1e5::t_75d61e8a1503b3 1-3
+ai/comments/ai/src/rs/memory/src/claude.rs.md
+  s_18532c9e70c1e5::t_604c9da8342d5c 8-9
+ai/src/rs/chat/prompts/master.txt
+  s_18532c9e70c1e5::t_857a21b58b4d6d 1-16
+ai/src/rs/ai/src/lib.rs
+  s_18532c9e70c1e5::t_fb8da11458e58e 1
+ai/src/rs/chat/src/mcp.rs
+  s_18532c9e70c1e5::t_857a21b58b4d6d 1-59,61-126
+  s_18532c9e70c1e5::t_c42938685fe635 60
+  s_18532c9e70c1e5::t_1fe031eaefee89 127-130,132-140,143-187
+  s_18532c9e70c1e5::t_b4adedecbac2ec 131,141-142
+ai/comments/ai/src/rs/memory/src/backend.rs.md
+  s_18532c9e70c1e5::t_604c9da8342d5c 4-5
+.gitignore
+  s_a2bb6566b3fc43::t_0849afd89593b4 19-21
+ai/comments/ai/src/rs/memory/src/zoom.rs.md
+  s_18532c9e70c1e5::t_604c9da8342d5c 3
+ai/comments/ai/src/rs/chat/src/master.rs.md
+  s_18532c9e70c1e5::t_a95d6d549de673 1-3
+ai/src/rs/chat/src/cli.rs
+  s_18532c9e70c1e5::t_566a0acd7fa923 108-109,113-114
+  s_18532c9e70c1e5::t_1eb975304dd8f7 106-107,110-112,116
+  s_a2bb6566b3fc43::t_0849afd89593b4 8,12,17,52-62,65,77,115
+  s_18532c9e70c1e5::t_436d2f4e82e9d1 6-7,9,18-48,50-51,63-64,66-76,78-101,103-105,117-119
+  s_a2bb6566b3fc43::t_8d9c70b147409a 1-5,10-11,13-16,49,102
+ai/comments/ai/src/rs/memory/src/record.rs.md
+  s_18532c9e70c1e5::t_604c9da8342d5c 8
+ai/research/20261004T194110---ai-chat.md
+  s_18532c9e70c1e5::t_604c9da8342d5c 42-45,47-49
+  s_18532c9e70c1e5::t_316e199762d7f3 51
+  s_a2bb6566b3fc43::t_7c589c0ba7a136 41,46,50,52-54
+ai/comments/ai/src/rs/chat/src/prime.rs.md
+  s_a2bb6566b3fc43::t_0849afd89593b4 3
+  s_18532c9e70c1e5::t_a95d6d549de673 1-2
+src/main.rs
+  s_18532c9e70c1e5::t_fb8da11458e58e 16-17,23
+ai/comments/ai/src/rs/chat/src/mcp.rs.md
+  s_18532c9e70c1e5::t_a95d6d549de673 1-3
+ai/comments/ai/src/rs/chat/src/session.rs.md
+  s_18532c9e70c1e5::t_a95d6d549de673 1-2,4,10
+  s_a2bb6566b3fc43::t_0849afd89593b4 3,5-9,11
+ai/src/rs/chat/Cargo.toml
+  s_18532c9e70c1e5::t_fb8da11458e58e 11
+  s_18532c9e70c1e5::t_857a21b58b4d6d 1-10,12-17
+ai/src/rs/chat/tests/fixtures/turn-thinking.jsonl
+  s_a2bb6566b3fc43::t_0849afd89593b4 1-17
+ai/src/rs/memory/Cargo.toml
+  s_18532c9e70c1e5::t_857a21b58b4d6d 11
+ai/src/rs/chat/src/session.rs
+  s_18532c9e70c1e5::t_1eb975304dd8f7 486,609,615,622,631,634-635,638,784-817,819-831
+  s_18532c9e70c1e5::t_4708f950bc7c13 557-560,564-565,569,571-572,660-661,667-668,670,679-681,690-691,693-695,697-714,718-721,727-729,739-740,743-745,747-751,754-763,765-780,850,854-855,861-862
+  s_18532c9e70c1e5::t_29021750738608 514,674-678,682-689,692,696,715-717,722-726,730-738,741-742,746,752-753,764
+  s_18532c9e70c1e5::t_0c01130d607a8d 475-481
+  s_a2bb6566b3fc43::t_0849afd89593b4 1-6,8,15-19,21-23,26,28,30,32-34,36-37,39-40,46,55-57,62-63,66-67,75-120,123,127,130-144,146,155,158-162,166,173-175,177-187,190-191,193-194,196-198,200-210,212-221,223-244,246,248-253,255-357,359-363,365-386,391-394,396-428,431,434,436-441,461,464-465,468,471,485,488,491-492,502,508-510,512,515-516,518,520-521,532,536,538,540-541,543-548,550-553,556,562-563,566-568,570,573-574,577,582,585,589-590,594-595,599,601-604,606,611-612,617,619,624,626-629,640-641,643,645-647,649-652,654-655,659,662-664,666,669,672,781,783,833-836,838-843,845-848,851-853,856-858,860,863,865,868-1059
+  s_18532c9e70c1e5::t_566a0acd7fa923 211
+  s_18532c9e70c1e5::t_7990f1dcb77d20 58,64-65,68-71
+  s_18532c9e70c1e5::t_4989c437e078fe 495-496,498-499
+  s_18532c9e70c1e5::t_436d2f4e82e9d1 7,9-10,12-14,20,24-25,27,29,31,38,41-43,45,47-51,53-54,59-61,72,74,121-122,124-126,128,145,147-148,154,156-157,163-165,167-172,176,188-189,192,195,199,222,245,247,254,358,364,387-390,395,429-430,432-433,435,442-443,1060
+  s_a2bb6566b3fc43::t_fb47e3a2c7fa2b 11,35,44,52,73,129,149-153,444-460,462-463,466-467,469-470,472-474,482-484,487,489-490,493-494,497,500-501,503-507,511,513,517,519,522-531,533-535,537,539,542,549,554-555,561,575-576,578-581,583-584,586-588,591-593,596-598,600,605,607-608,610,613-614,616,618,620-621,623,625,630,632-633,636-637,639,642,644,648,653,656-658,665,671,673,782,818,832,837,844,849,859,864,866-867
+ai/src/rs/chat/src/lib.rs
+  s_18532c9e70c1e5::t_436d2f4e82e9d1 1-8
+ai/comments/ai/src/rs/memory/Cargo.toml.md
+  s_18532c9e70c1e5::t_316e199762d7f3 6
+ai/comments/ai/src/rs/memory/tests/memory.rs.md
+  s_18532c9e70c1e5::t_75d61e8a1503b3 9
+ai/src/rs/memory/src/backend.rs
+  s_18532c9e70c1e5::t_857a21b58b4d6d 26-28
+ai/src/rs/chat/src/stream.rs
+  s_a2bb6566b3fc43::t_0849afd89593b4 166-229
+  s_18532c9e70c1e5::t_857a21b58b4d6d 1-60,62-85,87-107,111-125,127-165,230-232
+  s_18532c9e70c1e5::t_c42938685fe635 61,86,108-110,126
+ai/src/rs/ai/Cargo.toml
+  s_18532c9e70c1e5::t_fb8da11458e58e 8
+ai/src/rs/chat/src/prime.rs
+  s_a2bb6566b3fc43::t_0849afd89593b4 3,12-16,32-33,37,47-51,58-63,68-78,81,127-129
+  s_18532c9e70c1e5::t_857a21b58b4d6d 1-2,4-11,17-31,34-36,38-46,52-57,64-67,79-80,82-116,118-121,123-126,130-133
+  s_a2bb6566b3fc43::t_c81b1b304000ef 117,122
+ai/src/rs/memory/src/lib.rs
+  s_18532c9e70c1e5::t_857a21b58b4d6d 2,7,16,25
+tests/cli.rs
+  s_a2bb6566b3fc43::t_0849afd89593b4 495-656
+ai/comments/src/main.rs.md
+  s_18532c9e70c1e5::t_a95d6d549de673 1-3
+ai/comments/ai/src/rs/ai/src/lib.rs.md
+  s_18532c9e70c1e5::t_a95d6d549de673 1-3
+ai/src/rs/memory/src/claude.rs
+  s_18532c9e70c1e5::t_f9c6cd5a6c8eea 8,11,131,175-187,221-224
+  s_18532c9e70c1e5::t_7990f1dcb77d20 139-147,150,190-195,197-199
+  s_18532c9e70c1e5::t_fbb31a8cace296 528-529
+  s_18532c9e70c1e5::t_1fe031eaefee89 512,514-527,530-555,557-591,593-628,630-633
+  s_18532c9e70c1e5::t_857a21b58b4d6d 2-3,6,28-67,69-74,79-92,100,103-107,109,116,118,122,124-130,132-138,148-149,151-152,158-159,162,188-189,196,200-202,204-211,213-218,220,225-226,228-235,239-255,263-264,269-291,298-299,305,313-314,319-320,332-337,339-345,350-351,366-367,369,375,377-385,388,395,408,421,423,495-510,513
+  s_18532c9e70c1e5::t_fedd62da0c4fe6 27,75-77,93-99,101,123,236-238,256-261
+  s_18532c9e70c1e5::t_4eae07cad6be15 157,164-174,203,212,219,227
+  s_18532c9e70c1e5::t_d2b35404ebeeb7 68,78,102,108,110-115,117,119-121,153-156,160-161,163,262,265-268,511
+  s_18532c9e70c1e5::t_1d05d071a17fc0 556
+  s_18532c9e70c1e5::t_0aa3d52a19db9f 592
+  s_18532c9e70c1e5::t_19014802fd71b4 629
+ai/glossary.md
+  s_a2bb6566b3fc43::t_0849afd89593b4 18-23
+  s_18532c9e70c1e5::t_604c9da8342d5c 17
+ai/comments/ai/src/rs/chat/Cargo.toml.md
+  s_18532c9e70c1e5::t_a95d6d549de673 1-3
+ai/comments/ai/src/rs/chat/src/cli.rs.md
+  s_a2bb6566b3fc43::t_0849afd89593b4 3,5-7
+  s_18532c9e70c1e5::t_a95d6d549de673 1-2,4
+Cargo.toml
+  s_a2bb6566b3fc43::t_0849afd89593b4 15
+Cargo.lock
+  s_a2bb6566b3fc43::t_20f01f3e6e94f9 18,22-35,44,1156,1375-1394
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "021db20c57c4e4491446e8b89e1bb065a6defb98",
+  "prompts": {},
+  "sessions": {
+    "s_18532c9e70c1e5": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a10912-2e68-7973-8037-fb8e7ce439b2",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    },
+    "s_a2bb6566b3fc43": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8d482500-9fe7-4d08-bd90-4df9fbafe671",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
