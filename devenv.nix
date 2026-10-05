@@ -7,8 +7,6 @@
 }:
 
 {
-  outputs.ai = config.languages.rust.import ./. { };
-
   # https://devenv.sh/basics/
   # env.GREET = "devenv";
 
