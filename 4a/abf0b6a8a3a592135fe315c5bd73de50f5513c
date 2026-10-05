@@ -1,0 +1,108 @@
+ai/comments/ai/src/rs/memory/src/record.rs.md
+  s_a2bb6566b3fc43::t_de1caa7ca224b9 6-8
+ai/comments/ai/src/rs/memory/tests/memory.rs.md
+  s_a2bb6566b3fc43::t_de1caa7ca224b9 7
+ai/comments/ai/src/rs/memory/src/grep.rs.md
+  s_a2bb6566b3fc43::t_de1caa7ca224b9 3-4
+ai/comments/ai/src/rs/memory/src/claude.rs.md
+  s_a2bb6566b3fc43::t_de1caa7ca224b9 7
+ai/comments/ai/src/rs/memory/Cargo.toml.md
+  s_a2bb6566b3fc43::t_de1caa7ca224b9 6
+ai/src/rs/memory/src/claude.rs
+  s_a2bb6566b3fc43::t_854ba6a4537706 491,495,497,500
+  s_a2bb6566b3fc43::t_c9f3e957a96900 326-329,345-349,360,404-411,421-424
+ai/src/rs/memory/src/compact.rs
+  s_a2bb6566b3fc43::t_fe9a881f488e7f 16,110-111,128-133,136-137,157,290-291
+ai/src/rs/memory/src/store.rs
+  s_a2bb6566b3fc43::t_74bf5cb3d24c8e 184,264,270,273-277,281
+  s_a2bb6566b3fc43::t_86588fcf61c828 31
+  s_a2bb6566b3fc43::t_bd38eec0eb5a0e 138,142-161,168-183
+  s_a2bb6566b3fc43::t_b864c2131eb351 22-23
+  s_a2bb6566b3fc43::t_f8b45a978435f0 86-94
+  s_a2bb6566b3fc43::t_60bac7c28bc7e3 383-386
+  s_a2bb6566b3fc43::t_9af5fa611c3fbe 296,303
+  s_a2bb6566b3fc43::t_02f80cebc4e793 344,347-348,373,390
+  s_a2bb6566b3fc43::t_1c04633c29346d 185
+ai/src/rs/memory/Cargo.toml
+  s_a2bb6566b3fc43::t_e211ffc96a8d85 9
+ai/comments/ai/src/rs/memory/src/config.rs.md
+  s_a2bb6566b3fc43::t_de1caa7ca224b9 3-4
+ai/research/20261004T194110---ai-chat.md
+  s_a2bb6566b3fc43::t_125bb2882d44fa 10,20,22,25
+ai/comments/tests/cli.rs.md
+  s_a2bb6566b3fc43::t_de1caa7ca224b9 5
+tests/cli.rs
+  s_a2bb6566b3fc43::t_96ad6832948625 294,299-300,442,472-478
+  s_a2bb6566b3fc43::t_40e9e46a5c340a 314
+  s_a2bb6566b3fc43::t_dbf9be541a8673 273,313
+  s_a2bb6566b3fc43::t_3b3faa3be5e3bf 479-485
+ai/comments/ai/src/rs/memory/src/store.rs.md
+  s_a2bb6566b3fc43::t_de1caa7ca224b9 5,10-11
+ai/src/rs/memory/src/cli.rs
+  s_a2bb6566b3fc43::t_ca949239ca5e6f 450
+  s_a2bb6566b3fc43::t_e090d4ab9a8e7c 22,237,294,346
+  s_a2bb6566b3fc43::t_7a4dfa0d090083 463-470
+  s_a2bb6566b3fc43::t_bb26db45d2148d 248
+ai/src/rs/memory/tests/memory.rs
+  s_a2bb6566b3fc43::t_6fbc41362c10ae 139-146,148-151
+  s_a2bb6566b3fc43::t_df8fd3e5409d2a 194-197
+  s_a2bb6566b3fc43::t_7b6144a6753256 792-796,802-838,844-852
+  s_a2bb6566b3fc43::t_57a35c26eb0b53 16,346,355,373,375,435-436
+  s_a2bb6566b3fc43::t_e15cb6d703ef72 695,699,701-706,710-712,715,720,728-730,739
+  s_a2bb6566b3fc43::t_3b3faa3be5e3bf 347-354,368-370,716-719,721-727,731-738,740-743,797-801,839-843
+ai/src/rs/chat/src/session.rs
+  s_a2bb6566b3fc43::t_d6e81cc0bad3a3 459-461
+ai/comments/ai/src/rs/memory/src/compact.rs.md
+  s_a2bb6566b3fc43::t_de1caa7ca224b9 7
+ai/src/rs/memory/src/backend.rs
+  s_a2bb6566b3fc43::t_09b7b623249c70 21-23,37-39
+ai/comments/ai/src/rs/memory/src/cli.rs.md
+  s_a2bb6566b3fc43::t_de1caa7ca224b9 5
+ai/src/rs/memory/src/config.rs
+  s_a2bb6566b3fc43::t_194b249b4cf829 4-5,9-11,14,20,24,32,40,48,76
+  s_a2bb6566b3fc43::t_fdbb2ca4464913 63-64,66-68,70
+ai/src/rs/memory/src/grep.rs
+  s_a2bb6566b3fc43::t_cd8f139f01a7b9 41-42
+  s_a2bb6566b3fc43::t_eca17e8fe650c3 319-320
+  s_a2bb6566b3fc43::t_16d75d9289bf40 147,151-162,164,168
+  s_a2bb6566b3fc43::t_4995ac0e5b302e 185
+  s_a2bb6566b3fc43::t_4588f64d5352fc 292
+ai/src/rs/memory/src/record.rs
+  s_a2bb6566b3fc43::t_99a47a7d61aba9 246-248,250
+  s_a2bb6566b3fc43::t_14bff35fba89bb 227
+  s_a2bb6566b3fc43::t_75ce44880dbd05 189,192,194-196
+  s_a2bb6566b3fc43::t_21e495c843b664 51,60-61,95,107,125,134,168,170-176,182-184,188,193,197
+  s_a2bb6566b3fc43::t_0407ad36aa6a8b 262-263
+  s_a2bb6566b3fc43::t_2e6314611b7e6c 271-276,280,282-288,290
+  s_a2bb6566b3fc43::t_72453a35fda94a 256
+ai/glossary.md
+  s_a2bb6566b3fc43::t_ed97499abb7cae 4,6,24,26,28
+ai/comments/ai/src/rs/memory/src/backend.rs.md
+  s_a2bb6566b3fc43::t_de1caa7ca224b9 6-7
+Cargo.lock
+  s_ad913ca3018c80::t_6942297fc34f5e 42
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4aabf0b6a8a3a592135fe315c5bd73de50f5513c",
+  "prompts": {},
+  "sessions": {
+    "s_a2bb6566b3fc43": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8d482500-9fe7-4d08-bd90-4df9fbafe671",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    },
+    "s_ad913ca3018c80": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a6cff98481b210af5",
+        "model": "unknown"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
