@@ -1,0 +1,25 @@
+ai/comments/tests/cli.rs.md
+  s_a2bb6566b3fc43::t_c65ad00cabb60a 3
+tests/cli.rs
+  s_a2bb6566b3fc43::t_c65ad00cabb60a 56-57
+ai/src/rs/chat/prompts/master.txt
+  s_a2bb6566b3fc43::t_19db7e0b0fa231 11-13
+ai/research/20261004T194110---ai-chat.md
+  s_a2bb6566b3fc43::t_5f649c8faaca77 51,65
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "eeb50a25d8802131c49e319e6be3d9e559cf532a",
+  "prompts": {},
+  "sessions": {
+    "s_a2bb6566b3fc43": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8d482500-9fe7-4d08-bd90-4df9fbafe671",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
