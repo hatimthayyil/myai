@@ -493,15 +493,45 @@ mod tests {
             Ok(())
         }
     }
+    /// A bash `claude` in `dir` that runs `body` there.
     fn fake(dir: &std::path::Path, body: &str) -> std::ffi::OsString {
-        let p = dir.join("claude");
+        let bash = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+            .map(|d| d.join("bash"))
+            .find(|p| p.is_file())
+            .expect("bash on PATH");
+        let src = dir.join("claude.sh");
         fs::write(
-            &p,
-            format!("#!/usr/bin/env bash\ncd '{}'\n{body}", dir.display()),
+            &src,
+            format!("#!{}\ncd '{}'\n{body}", bash.display(), dir.display()),
         )
         .unwrap();
+        let p = dir.join("claude");
+        assert!(
+            Command::new("cp")
+                .arg(&src)
+                .arg(&p)
+                .status()
+                .unwrap()
+                .success()
+        );
         fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
         p.into()
+    }
+    /// Runs `f` beside a session; if it panics, the session exits so the test fails, not hangs.
+    fn drive<T: Send + 'static>(
+        tx: &Sender<Event>,
+        f: impl FnOnce(&Sender<Event>) -> T + Send + 'static,
+    ) -> thread::JoinHandle<T> {
+        struct ExitOnPanic(Sender<Event>);
+        impl Drop for ExitOnPanic {
+            fn drop(&mut self) {
+                if thread::panicking() {
+                    let _ = self.0.send(Event::Exit);
+                }
+            }
+        }
+        let guard = ExitOnPanic(tx.clone());
+        thread::spawn(move || f(&guard.0))
     }
     fn wait_file(path: &std::path::Path) {
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -550,9 +580,8 @@ echo '{"type":"assistant","message":{"content":[{"type":"text","text":"BAD FOLLO
         let master = Master::new(program, "opus", "high", "constant", "{}".into()).unwrap();
         let (tx, rx) = channel();
         tx.send(Event::Input("opening".into())).unwrap();
-        let inject = tx.clone();
         let started = temp.path().join("started");
-        let driver = thread::spawn(move || {
+        let driver = drive(&tx, move |inject| {
             wait_file(&started);
             inject.send(Event::Input("taken".into())).unwrap();
             inject.send(Event::Input("pending".into())).unwrap();
@@ -749,10 +778,9 @@ sleep 60
         let master = Master::new(program, "opus", "high", "constant", "{}".into()).unwrap();
         let (tx, rx) = channel();
         tx.send(Event::Input("question".into())).unwrap();
-        let inject = tx.clone();
         let started = temp.path().join("started");
         let appended = temp.path().join("appended");
-        let driver = thread::spawn(move || {
+        let driver = drive(&tx, move |inject| {
             wait_file(&started);
             Store::open(&memdir)
                 .unwrap()
@@ -801,9 +829,8 @@ sleep 60
                 "opening".into()
             }))
             .unwrap();
-            let inject = tx.clone();
             let started = temp.path().join("started");
-            let driver = thread::spawn(move || {
+            let driver = drive(&tx, move |inject| {
                 wait_file(&started);
                 if !initial_large {
                     inject.send(Event::Input(large)).unwrap();
@@ -845,9 +872,8 @@ sleep 60
             .unwrap();
         let (tx, rx) = channel();
         tx.send(Event::Input("opening".into())).unwrap();
-        let inject = tx.clone();
         let started = temp.path().join("started");
-        let driver = thread::spawn(move || {
+        let driver = drive(&tx, move |inject| {
             wait_file(&started);
             inject.send(Event::Input("untaken".into())).unwrap();
             inject.send(Event::Exit).unwrap();
@@ -963,9 +989,8 @@ while :; do sleep .05; done
         let master = Master::new(program, "opus", "high", "constant", "{}".into()).unwrap();
         let (tx, rx) = channel();
         tx.send(Event::Input("go".into())).unwrap();
-        let inject = tx.clone();
         let started = temp.path().join("started");
-        let driver = thread::spawn(move || {
+        let driver = drive(&tx, move |inject| {
             wait_file(&started);
             inject.send(Event::Input("never taken".into())).unwrap();
             inject.send(Event::Cancel).unwrap();
@@ -1013,10 +1038,9 @@ echo "$initial" >> turns
             .unwrap();
         let master = Master::new(program, "opus", "high", "constant", "{}".into()).unwrap();
         let (tx, rx) = channel();
-        let inject = tx.clone();
         let dir = temp.path().to_path_buf();
         let count = move |f: &str| lines(&dir.join(f)).len();
-        let driver = thread::spawn(move || {
+        let driver = drive(&tx, move |inject| {
             let until = |n: usize, f: &str| {
                 let deadline = Instant::now() + Duration::from_secs(5);
                 while count(f) < n {

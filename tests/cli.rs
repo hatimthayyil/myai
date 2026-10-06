@@ -115,6 +115,30 @@ impl Sandbox {
         .unwrap();
         out
     }
+
+    /// Installs `body` as a bash `claude` in `bin/` and returns a `PATH` that finds it first.
+    fn fake_claude(&self, body: &str) -> String {
+        let path = std::env::var("PATH").unwrap();
+        let bash = std::env::split_paths(&path)
+            .map(|d| d.join("bash"))
+            .find(|p| p.is_file())
+            .expect("bash on PATH");
+        let bin = self.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let src = self.path().join("claude.sh");
+        fs::write(&src, format!("#!{}\n{body}", bash.display())).unwrap();
+        let claude = bin.join("claude");
+        assert!(
+            Command::new("cp")
+                .arg(&src)
+                .arg(&claude)
+                .status()
+                .unwrap()
+                .success()
+        );
+        fs::set_permissions(&claude, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        format!("{}:{path}", bin.display())
+    }
 }
 
 fn text(b: &[u8]) -> String {
@@ -466,8 +490,7 @@ fn a_closed_pipe_is_quiet() {
 }
 
 /// A fake `claude`: answers every stream-json message with a fixed result.
-const FAKE_CLAUDE: &str = "#!/bin/sh
-while read -r line; do
+const FAKE_CLAUDE: &str = "while read -r line; do
   printf '%s\\n' '{\"type\":\"result\",\"is_error\":false,\"result\":\"a fake summary\",\"stop_reason\":\"end_turn\",\"session_id\":\"fake-sess\"}'
 done
 ";
@@ -476,12 +499,7 @@ done
 fn a_note_naps_in_the_background() {
     let s = Sandbox::new();
     assert!(s.ai(&["init"]).status.success());
-    let bin = s.path().join("bin");
-    fs::create_dir(&bin).unwrap();
-    let claude = bin.join("claude");
-    fs::write(&claude, FAKE_CLAUDE).unwrap();
-    fs::set_permissions(&claude, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let path = s.fake_claude(FAKE_CLAUDE);
     for i in 0..2 {
         let r = s
             .cmd(s.path(), Some(&s.store()))
@@ -535,8 +553,7 @@ fn a_note_naps_in_the_background() {
     );
 }
 
-const FAKE_MASTER: &str = r#"#!/usr/bin/env bash
-d="$(dirname "$0")"
+const FAKE_MASTER: &str = r#"d="$(dirname "$0")"
 k=0
 while ! mkdir "$d/call$k" 2>/dev/null; do k=$((k+1)); done
 c="$d/call$k"
@@ -567,11 +584,8 @@ fn a_chat_turn_end_to_end_with_a_fake_claude() {
     let s = Sandbox::new();
     assert!(s.ai(&["init"]).status.success());
     assert!(s.ai(&["note", "the code word is papaya"]).status.success());
+    let path = s.fake_claude(FAKE_MASTER);
     let bin = s.path().join("bin");
-    fs::create_dir(&bin).unwrap();
-    let claude = bin.join("claude");
-    fs::write(&claude, FAKE_MASTER).unwrap();
-    fs::set_permissions(&claude, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     fs::create_dir(s.path().join("home/.claude")).unwrap();
     fs::write(s.path().join("home/.claude/CLAUDE.md"), "Mine.\n").unwrap();
     let mut c = Command::new(env!("CARGO_BIN_EXE_ai"));
@@ -580,10 +594,7 @@ fn a_chat_turn_end_to_end_with_a_fake_claude() {
         .current_dir(s.path())
         .args(["chat", "--model", "sonnet"])
         .env("AI_MEMORY_DIR", s.store())
-        .env(
-            "PATH",
-            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
-        )
+        .env("PATH", &path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

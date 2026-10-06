@@ -34,12 +34,13 @@
             };
             cargoLock.lockFile = ./Cargo.lock;
             nativeCheckInputs = [ pkgs.git ];
-            checkFlags = [ "--skip=a_chat_turn_end_to_end_with_a_fake_claude" ];
             postCheck = ''
-              cp Cargo.lock ai/src/rs/memory/
-              CARGO_TARGET_DIR=$PWD/target cargo test --release --offline \
-                --target ${pkgs.stdenv.hostPlatform.rust.rustcTarget} \
-                --manifest-path ai/src/rs/memory/Cargo.toml
+              for crate in memory chat; do
+                cp Cargo.lock ai/src/rs/$crate/
+                CARGO_TARGET_DIR=$PWD/target cargo test --release --offline \
+                  --target ${pkgs.stdenv.hostPlatform.rust.rustcTarget} \
+                  --manifest-path ai/src/rs/$crate/Cargo.toml
+              done
             '';
             meta.mainProgram = "ai";
           };

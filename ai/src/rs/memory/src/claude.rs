@@ -599,10 +599,13 @@ mod cleanup_tests {
             },
         )
         .unwrap();
+        let mut last = None;
+        while last.as_deref() != Some("{\"type\":\"result\"}") {
+            last = rx.recv_timeout(Duration::from_secs(10)).unwrap().or(last);
+        }
         thread::sleep(Duration::from_millis(100));
         assert!(!sentinel.exists());
-        let lines: Vec<_> = rx.try_iter().flatten().collect();
-        assert_eq!(lines.last().unwrap(), "{\"type\":\"result\"}");
+        assert!(rx.try_iter().flatten().next().is_none());
         drop(proc);
     }
     #[test]
