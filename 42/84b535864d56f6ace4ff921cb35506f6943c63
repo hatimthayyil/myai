@@ -1,0 +1,162 @@
+ai/src/rs/chat/src/lib.rs
+  s_fad645238711eb::t_a521e05a81b8bd 8
+  s_fad645238711eb::t_2f5e1ceddbdc96 9
+ai/src/rs/chat/src/tui/markdown.rs
+  s_fad645238711eb::t_645ddc62cee3e8 1-139,141-326
+  s_fad645238711eb::t_753286f15eff54 140
+ai/src/rs/chat/src/cli.rs
+  s_fad645238711eb::t_a521e05a81b8bd 6,17-20,70,93,98-108,122-138
+  s_fad645238711eb::t_2f5e1ceddbdc96 7
+  s_fad645238711eb::t_25c3482d41b523 139
+ai/comments/ai/src/rs/chat/src/cli.rs.md
+  s_fad645238711eb::t_f40f592ebe3979 7
+ai/src/rs/chat/src/tui/stream.rs
+  s_fad645238711eb::t_641641f7b770a6 1-2,4-5,9-10,12,17-26,36-41,43-44,46,59-60,72,107
+  s_fad645238711eb::t_0fd0a5a48a7661 3,6-8,11,13-16,27-35,42,45,47-58,61-71,73-106
+ai/comments/ai/src/rs/chat/src/ui/plain.rs.md
+  s_fad645238711eb::t_6f8be272e44c67 1-3
+ai/src/rs/chat/src/prime.rs
+  s_fad645238711eb::t_69bdd32d742c78 100-103
+  s_fad645238711eb::t_013da9cfba66a9 20
+  s_fad645238711eb::t_8a0aff7218e5e3 130
+  s_fad645238711eb::t_753286f15eff54 21-24
+ai/src/rs/chat/src/tui/cells.rs
+  s_fad645238711eb::t_753286f15eff54 41-44,75-78,105-108,113-117
+  s_fad645238711eb::t_e0d5c5109b2c27 2
+  s_fad645238711eb::t_489d03aed471db 1,3-40,45-74,79-104,109-112,118-147
+ai/src/rs/chat/src/tui/wrap.rs
+  s_fad645238711eb::t_c9f19392d08977 64
+  s_fad645238711eb::t_30d217188ebcf3 1-63,65-87
+ai/src/rs/chat/src/ui/mod.rs
+  s_fad645238711eb::t_753286f15eff54 54-61,68-71
+  s_fad645238711eb::t_c1684423b0ec9a 1-53,62-67,72-101
+ai/comments/ai/src/rs/chat/src/session.rs.md
+  s_fad645238711eb::t_f40f592ebe3979 9
+ai/src/rs/chat/src/ui/plain.rs
+  s_fad645238711eb::t_ea004fa4b766c9 1-85
+ai/comments/ai/src/rs/chat/src/stream.rs.md
+  s_fad645238711eb::t_f40f592ebe3979 3
+ai/comments/ai/src/rs/chat/src/tui/wrap.rs.md
+  s_fad645238711eb::t_1aec5d054d4d36 1-3
+ai/src/rs/chat/Cargo.toml
+  s_fad645238711eb::t_f355226475e361 18-22
+  s_fad645238711eb::t_12a7e82d4e8b55 11
+  s_fad645238711eb::t_777670151ebdb6 13
+  s_fad645238711eb::t_e0937ce419b4f6 16
+ai/src/rs/chat/src/tui/app.rs
+  s_fad645238711eb::t_d796d8b296db2c 264,266-267,279-290,292-300,307-314,319-334,337,339-390
+  s_fad645238711eb::t_3c7b76e9d07c62 252
+  s_fad645238711eb::t_b0c81aedb4712c 1-6,8-10,12-204,212-214,217-231,233-251,253-259,263,265,268-278,391-392
+  s_fad645238711eb::t_32a601f481b689 215-216
+  s_fad645238711eb::t_9d501012f347ea 260-262
+  s_fad645238711eb::t_e6cda916c02251 338
+  s_fad645238711eb::t_6b6e0a66abd22f 205-206,208-211
+  s_fad645238711eb::t_6f00bb11cc31da 291
+  s_fad645238711eb::t_117453469d2234 11
+  s_fad645238711eb::t_e0d5c5109b2c27 7,207
+  s_fad645238711eb::t_61b38aa95d1a20 232
+  s_fad645238711eb::t_753286f15eff54 301-306,315-318,335-336
+ai/comments/ai/src/rs/chat/src/tui/term.rs.md
+  s_fad645238711eb::t_2c880e6765e105 1-9
+ai/research/20261004T194110---ai-chat.md
+  s_fad645238711eb::t_40f924d89bba5e 46-49
+ai/src/rs/chat/src/tui/term.rs
+  s_fad645238711eb::t_cd196a7b58b941 2-6,8-13,17,19-21,24-25,27,29-33,35-37,39-42,44-47,54-65,67-83,86-90,93-97,101,112-114,116-118,120-125,127-132,141-142,144-146,149-150,155,161,163-165,172-173,187,192-193
+  s_fad645238711eb::t_29b1ae449bffe6 202
+  s_fad645238711eb::t_273897f97651e1 154,158-159
+  s_fad645238711eb::t_752a6ef54d4f53 139
+  s_fad645238711eb::t_5d9db505bee7a8 26,28,66,119,151,188
+  s_fad645238711eb::t_b7a165b1f5f357 147-148
+  s_fad645238711eb::t_3e7a3f60a3cc03 167-169
+  s_fad645238711eb::t_986fde1e2ff060 7
+  s_fad645238711eb::t_b5929e52b1a51e 185-186
+  s_fad645238711eb::t_03c3f9ec8d4f0a 98-99,104-110
+  s_fad645238711eb::t_29a7d9c6ff302d 133-138,140
+  s_fad645238711eb::t_989353cb013d1b 194-201,203,210-231,238-273
+  s_fad645238711eb::t_753286f15eff54 204-209,232-237
+  s_fad645238711eb::t_5e0bc746ae45b7 152-153,156-157
+  s_fad645238711eb::t_e8245e0d1b4f94 1,14-16,18,22-23,34,38,43,48-53,84-85,91-92,100,102-103,111,115,126,160,162,166,170-171,174-184,189-191
+  s_fad645238711eb::t_36cac81b88afa9 143
+ai/comments/ai/src/rs/chat/src/tui/mod.rs.md
+  s_fad645238711eb::t_309d45d7e92fcc 1-7
+ai/comments/ai/src/rs/chat/src/tui/stream.rs.md
+  s_fad645238711eb::t_a024c989a0f774 1-3
+ai/src/rs/chat/src/session.rs
+  s_fad645238711eb::t_405792eeedea6c 977
+  s_fad645238711eb::t_753286f15eff54 383,386,422
+  s_fad645238711eb::t_70048af719eaff 419,576,672,718,777,823,863,930,973,1011,1074
+  s_fad645238711eb::t_00802e0d762050 947-972,974-976,978-982
+  s_fad645238711eb::t_4e73696397f833 19,103-105,128-132,135,140,142,151-152,156,159,161,165-166,184,189,194-208,211,221,229-235,237,247-251,258,260-263,266,281,284,286,288,292,298,312,314,316-317,319-320,326,328,340,344-345,355,358,360,364,370,376,394,396,398,407,410
+  s_fad645238711eb::t_ced1b4dabf753b 946
+ai/src/rs/chat/src/tui/composer.rs
+  s_fad645238711eb::t_44fa420aa20cbb 2-6,8-31,33-35,37-51,54-180,182-245,252-253,255-263
+  s_fad645238711eb::t_e6cda916c02251 360-361
+  s_fad645238711eb::t_753286f15eff54 52-53,246-251,254,306-309,340-343
+  s_fad645238711eb::t_7b5d8ec2ce9e1d 36
+  s_fad645238711eb::t_1ab05535651a86 264-305,310-339,344-359,362-367
+  s_fad645238711eb::t_93fa9d9fe0805e 1,32,181
+  s_fad645238711eb::t_e0d5c5109b2c27 7
+ai/comments/ai/src/rs/chat/src/tui/markdown.rs.md
+  s_fad645238711eb::t_978b3f8cd3a8b0 1-7
+ai/src/rs/chat/src/tui/mod.rs
+  s_fad645238711eb::t_085d6ff807bb68 223
+  s_fad645238711eb::t_bbbb85b6d690d6 1-3,5-115,122-195,200-222,224-229,231-234
+  s_fad645238711eb::t_40b7c99c942fec 116-121
+  s_fad645238711eb::t_13b575a0d6f821 4
+  s_fad645238711eb::t_9a6ad6e09c6e45 230
+  s_fad645238711eb::t_753286f15eff54 196-199
+ai/comments/ai/src/rs/chat/src/tui/composer.rs.md
+  s_fad645238711eb::t_d842dbcce3222b 1-7
+ai/src/rs/chat/src/stream.rs
+  s_fad645238711eb::t_0fbb4676dc6439 207
+  s_fad645238711eb::t_aca15fa75bb918 109
+  s_fad645238711eb::t_3e46dc47b45745 74,76
+  s_fad645238711eb::t_7ed8c00c7730bb 102
+  s_fad645238711eb::t_028453263c214f 85-87
+  s_fad645238711eb::t_2a4b884d21a10a 225
+  s_fad645238711eb::t_b3b5702f2da1ec 138-141
+  s_fad645238711eb::t_b19d81e2208b36 172
+  s_fad645238711eb::t_753286f15eff54 212
+  s_fad645238711eb::t_5d255a3eb4fd42 4,9,11-12
+  s_fad645238711eb::t_ab9ed8d0a4bf97 115-120
+ai/comments/ai/src/rs/chat/src/tui/app.rs.md
+  s_fad645238711eb::t_8d014aa9811efc 1-8
+ai/comments/ai/src/rs/chat/src/ui/mod.rs.md
+  s_fad645238711eb::t_4e4f29ec4b8278 1-5
+ai/comments/ai/src/rs/chat/src/tui/cells.rs.md
+  s_fad645238711eb::t_bdf1ce471de8da 1-3
+Cargo.lock
+  s_fad645238711eb::t_676185b54aa6e0 5-10,37-38,40-41,43-44,53,125-133,143-151,158-202,215-223,235-252,265-273,280-285,341-363,370-378,403-483,521-574,583-588,619-648,667-706,713-758,767,1358,1425-1429,1448-1449,1451,1454-1455,1457,1460-1461,1463,1465,1469-1470,1472-1523,1556-1589,1596-1610,1617-1622,1638-1656,1672-1714,1731-1765,1772-1812,1825-1866,1897-1898,1900-1904,1907-1908,1910,1912-1913,1917-1918,1920,1922-1926,1930-1931,1933,1935,1939-1940,1942,1944-1945,1949-1950,1952-1956,1959-1960,1962,1964-1965,1969-1970,1972,1974-1978,1982-1983,1985,1987,1991-1992,1994,1997-1998,2000-2240,2249-2254,2270-2275,2283,2325-2345,2356-2366,2377-2382,2389-2400,2413-2418,2425-2456,2479-2496,2504,2510-2604,2611-2622,2636-2656,2663-2680,2702-2724,2731-2757,2768-2915,2925-2930,2946-2951
+ai/comments/ai/src/rs/chat/Cargo.toml.md
+  s_fad645238711eb::t_db37c0bf545e40 3
+ai/src/rs/chat/src/tui/snapshots/ai_chat__tui__app__tests__history_cells_of_a_turn.snap
+  s_fad645238711eb::t_5d65e4f8709a55 1-27
+ai/src/rs/chat/src/tui/snapshots/ai_chat__tui__app__tests__idle_pane_with_a_draft_and_queued_messages.snap
+  s_fad645238711eb::t_6c80ceaca8fd07 1-10
+ai/src/rs/chat/src/tui/snapshots/ai_chat__tui__app__tests__working_pane_shows_the_line_being_streamed-2.snap
+  s_fad645238711eb::t_6b5e5fa2f7ee45 1-7
+ai/src/rs/chat/src/tui/snapshots/ai_chat__tui__app__tests__working_pane_shows_the_line_being_streamed.snap
+  s_fad645238711eb::t_8a59fbea554122 1-8
+ai/src/rs/chat/src/tui/snapshots/ai_chat__tui__stream__tests__streamed_in_any_pieces_it_renders_as_a_whole.snap
+  s_fad645238711eb::t_b57e814319a597 1-25
+ai/src/rs/chat/src/tui/snapshots/ai_chat__tui__term__tests__a_growing_pane_pushes_history_up_and_a_shrinking_one_clears_its_rows.snap
+  s_fad645238711eb::t_27d7de2441e658 1-14
+ai/src/rs/chat/src/tui/snapshots/ai_chat__tui__term__tests__history_fills_free_rows_then_scrolls_into_scrollback.snap
+  s_fad645238711eb::t_dc0b20cc41dec3 1-18
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4284b535864d56f6ace4ff921cb35506f6943c63",
+  "prompts": {},
+  "sessions": {
+    "s_fad645238711eb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4eea6a00-844f-43d7-82b9-a0223a5da5d7",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
