@@ -1,0 +1,19 @@
+ai/comments/flake.nix.md
+  s_a2bb6566b3fc43::t_91744e0a33ca3d 4-5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "83e3ac80cb1cb62a22c877f70186f010f3b1dc18",
+  "prompts": {},
+  "sessions": {
+    "s_a2bb6566b3fc43": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8d482500-9fe7-4d08-bd90-4df9fbafe671",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
