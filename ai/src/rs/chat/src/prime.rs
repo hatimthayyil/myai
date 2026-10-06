@@ -17,8 +17,11 @@ pub fn blocks(view: &str) -> Vec<String> {
 /// How a priming call ended.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Primed {
-    /// The API took the request: the view is in the cache.
-    Yes(String),
+    /// The API took the request: the view is in the cache, with these token counts.
+    Yes {
+        read: u64,
+        write: u64,
+    },
     No(String),
 }
 
@@ -94,11 +97,10 @@ impl Primer {
         let out = match line {
             Some(ev) if ev["type"] == "stream_event" && ev["event"]["type"] == "message_start" => {
                 let u = &ev["event"]["message"]["usage"];
-                Primed::Yes(format!(
-                    "primed: {} read · {} write",
-                    u["cache_read_input_tokens"].as_u64().unwrap_or(0),
-                    u["cache_creation_input_tokens"].as_u64().unwrap_or(0)
-                ))
+                Primed::Yes {
+                    read: u["cache_read_input_tokens"].as_u64().unwrap_or(0),
+                    write: u["cache_creation_input_tokens"].as_u64().unwrap_or(0),
+                }
             }
             Some(ev) if ev["type"] == "result" => Primed::No(
                 ai_memory::claude::reply(ev)
@@ -125,7 +127,7 @@ impl Primer {
     fn end(&mut self, out: Primed) -> Primed {
         let run = self.run.take().expect("a priming runs");
         match out {
-            Primed::Yes(_) => self.last = Some((run.view, Instant::now())),
+            Primed::Yes { .. } => self.last = Some((run.view, Instant::now())),
             Primed::No(_) => self.failed = Some(run.view),
         }
         out

@@ -707,3 +707,176 @@ fn a_chat_turn_end_to_end_with_a_fake_claude() {
     );
     assert_eq!(said(3), "No message 9.");
 }
+
+/// `ai chat` on a pseudo-terminal, answering the terminal queries the TUI makes.
+struct Tui {
+    child: std::process::Child,
+    master: Option<fs::File>,
+    out: Vec<u8>,
+    answered: usize,
+    stderr: PathBuf,
+}
+
+impl Tui {
+    fn start(s: &Sandbox, claude: &str) -> Tui {
+        use std::os::fd::{FromRawFd, OwnedFd};
+        assert!(s.ai(&["init"]).status.success());
+        let path = s.fake_claude(claude);
+        let (mut m, mut sl) = (0, 0);
+        let size = libc::winsize {
+            ws_row: 24,
+            ws_col: 80,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        let r = unsafe {
+            libc::openpty(
+                &mut m,
+                &mut sl,
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                &size,
+            )
+        };
+        assert_eq!(r, 0);
+        assert_eq!(
+            unsafe { libc::fcntl(m, libc::F_SETFD, libc::FD_CLOEXEC) },
+            0
+        );
+        let (master, slave) = unsafe { (fs::File::from_raw_fd(m), OwnedFd::from_raw_fd(sl)) };
+        let mut c = Command::new(env!("CARGO_BIN_EXE_ai"));
+        s.isolate(&mut c);
+        let child = c
+            .current_dir(s.path())
+            .args(["chat", "--model", "sonnet"])
+            .env("AI_MEMORY_DIR", s.store())
+            .env("PATH", &path)
+            .stdin(Stdio::from(slave.try_clone().unwrap()))
+            .stdout(Stdio::from(slave))
+            .stderr(fs::File::create(s.path().join("stderr")).unwrap())
+            .spawn()
+            .unwrap();
+        Tui {
+            child,
+            master: Some(master),
+            out: Vec::new(),
+            answered: 0,
+            stderr: s.path().join("stderr"),
+        }
+    }
+
+    /// Reads the screen until it shows `what`, answering cursor and device queries.
+    fn until(&mut self, what: &str) {
+        use std::io::{Read, Write};
+        use std::os::fd::AsRawFd;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let master = self.master.as_mut().unwrap();
+        while !text(&self.out).contains(what) {
+            assert!(
+                Instant::now() < deadline,
+                "no {what:?} in {:?}",
+                text(&self.out)
+            );
+            let mut fd = libc::pollfd {
+                fd: master.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            if unsafe { libc::poll(&mut fd, 1, 50) } <= 0 {
+                continue;
+            }
+            let mut buf = [0; 4096];
+            match master.read(&mut buf) {
+                Ok(n) if n > 0 => self.out.extend_from_slice(&buf[..n]),
+                _ => panic!(
+                    "the terminal closed; screen: {:?}; stderr: {}",
+                    text(&self.out),
+                    fs::read_to_string(&self.stderr).unwrap_or_default()
+                ),
+            }
+            let all = text(&self.out);
+            let mut queries: Vec<_> = all
+                .match_indices("\x1b[6n")
+                .chain(all.match_indices("\x1b[c"))
+                .collect();
+            queries.sort();
+            for (_, q) in queries.iter().skip(self.answered) {
+                let reply = if *q == "\x1b[6n" {
+                    "\x1b[1;1R"
+                } else {
+                    "\x1b[?1;2c"
+                };
+                master.write_all(reply.as_bytes()).unwrap();
+            }
+            self.answered = queries.len();
+        }
+    }
+
+    fn type_in(&mut self, s: &str) {
+        use std::io::Write;
+        self.master
+            .as_mut()
+            .unwrap()
+            .write_all(s.as_bytes())
+            .unwrap();
+    }
+
+    /// Waits at most two seconds for the chat to exit.
+    fn exits(&mut self) -> std::process::ExitStatus {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                return status;
+            }
+            if Instant::now() > deadline {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+                panic!("ai chat still runs 2 s later");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+impl Drop for Tui {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[test]
+fn a_closed_terminal_ends_the_tui() {
+    let s = Sandbox::new();
+    let mut t = Tui::start(&s, "sleep 60\n");
+    t.until("Ctrl-D exits");
+    drop(t.master.take());
+    assert!(t.exits().success());
+}
+
+const PRIMES_THEN_HANGS: &str = r#"read -r initial
+if [ "${DISABLE_PROMPT_CACHING:-}" = 1 ]; then
+  echo '{"type":"stream_event","event":{"type":"message_start","message":{"usage":{}}}}'
+fi
+sleep 60
+"#;
+
+#[test]
+fn sigterm_ends_the_tui_idle_priming_or_in_a_turn_and_restores_the_terminal() {
+    for (claude, wait) in [
+        ("sleep 60\n", None),
+        ("sleep 60\n", Some("priming")),
+        (PRIMES_THEN_HANGS, Some("working")),
+    ] {
+        let s = Sandbox::new();
+        let mut t = Tui::start(&s, claude);
+        t.until("Ctrl-D exits");
+        if let Some(wait) = wait {
+            t.type_in("hello\r");
+            t.until(wait);
+        }
+        unsafe { libc::kill(t.child.id() as i32, libc::SIGTERM) };
+        t.until("\x1b[?2004l");
+        assert!(t.exits().success(), "{wait:?}");
+    }
+}

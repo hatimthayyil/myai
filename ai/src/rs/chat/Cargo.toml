@@ -8,10 +8,15 @@ ai-memory = { path = "../memory" }
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 libc = "0.2.190"
+pulldown-cmark = { version = "0.13", default-features = false }
 jiff = "0.2.37"
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm", "scrolling-regions"] }
 serde_json = "1.0.151"
 signal-hook = "0.4.5"
+syntect = { version = "5", default-features = false, features = ["default-syntaxes", "default-themes", "regex-fancy"] }
 tempfile = "3.27.0"
+unicode-segmentation = "1.12.0"
+unicode-width = "0.2.2"
 
 [profile.dev.package."*"]
 opt-level = 3

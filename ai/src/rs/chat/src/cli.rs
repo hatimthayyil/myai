@@ -3,6 +3,8 @@ use crate::{
     mcp,
     prompt::system_prompt,
     session::{Event, Session, Spawner},
+    tui::Tui,
+    ui::Plain,
 };
 use ai_memory::{ClaudeCode, Compactor, Options, Store, Who, default_dir, prov};
 use anyhow::Result;
@@ -12,7 +14,10 @@ use std::{
     io::{self, BufRead, IsTerminal},
     path::PathBuf,
     process::ExitCode,
-    sync::{Arc, mpsc::channel},
+    sync::{
+        Arc,
+        mpsc::{Sender, channel},
+    },
     thread,
     time::Duration,
 };
@@ -62,20 +67,7 @@ impl Cli {
         };
         let (tx, rx) = channel();
         let input = tx.clone();
-        let tty = io::stdin().is_terminal();
-        thread::spawn(move || {
-            for line in io::stdin().lock().lines() {
-                match line {
-                    Ok(line) => {
-                        if input.send(Event::Input(line)).is_err() {
-                            return;
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-            let _ = input.send(if tty { Event::Exit } else { Event::End });
-        });
+        let tui = io::stdin().is_terminal() && io::stdout().is_terminal();
         let mut signals = signal_hook::iterator::Signals::new([SIGINT, SIGTERM, SIGHUP])?;
         let handle = signals.handle();
         let sigtx = tx.clone();
@@ -98,12 +90,22 @@ impl Cli {
             place: prov::place(&cwd),
             who: Who {
                 agent: "ai-chat".into(),
-                model: self.model,
+                model: self.model.clone(),
                 session: std::process::id().to_string(),
             },
             prime: true,
         };
-        let result = session.run(rx, &mut io::stdout().lock());
+        let result = match tui {
+            true => {
+                let mut ui = Tui::start(input, &self.model, &self.effort)?;
+                let result = session.run(rx, &mut ui);
+                result.and(ui.finish())
+            }
+            false => {
+                read_lines(input);
+                session.run(rx, &mut Plain::new(io::stdout().lock()))
+            }
+        };
         handle.close();
         if let Err(e) = result
             && !e.chain().any(|cause| {
@@ -116,4 +118,22 @@ impl Cli {
         }
         Ok(ExitCode::SUCCESS)
     }
+}
+
+/// Plain input: each stdin line is a message; its end exits a terminal, or ends a pipe once idle.
+fn read_lines(input: Sender<Event>) {
+    let tty = io::stdin().is_terminal();
+    thread::spawn(move || {
+        for line in io::stdin().lock().lines() {
+            match line {
+                Ok(line) => {
+                    if input.send(Event::Input(line)).is_err() {
+                        return;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        let _ = input.send(if tty { Event::Exit } else { Event::End });
+    });
 }

@@ -1,6 +1,5 @@
 use std::{
     collections::VecDeque,
-    io::Write,
     process::Command,
     sync::mpsc::{Receiver, RecvTimeoutError, Sender},
     time::{Duration, Instant},
@@ -17,6 +16,7 @@ use crate::{
     master::Master,
     prime::{Primed, Primer, blocks},
     stream::{Act, Mapper},
+    ui::{Render, Show, Usage},
 };
 
 /// How long the view must stay unchanged, with nothing running, before it is primed.
@@ -79,48 +79,6 @@ impl Drop for Spawner {
     }
 }
 
-/// Plain terminal output: streamed text as it comes, status lines on lines of their own.
-struct Printer<'w, W: Write> {
-    out: &'w mut W,
-    col0: bool,
-}
-
-/// `s` without control characters but newlines and tabs: model and tool output must not drive the terminal.
-fn plain(s: &str) -> String {
-    s.chars()
-        .filter(|&c| c == '\n' || c == '\t' || !c.is_control())
-        .collect()
-}
-
-impl<W: Write> Printer<'_, W> {
-    fn text(&mut self, s: &str) -> Result<()> {
-        let s = plain(s);
-        if !s.is_empty() {
-            write!(self.out, "{s}")?;
-            self.col0 = s.ends_with('\n');
-        }
-        Ok(())
-    }
-
-    fn info(&mut self, s: &str) -> Result<()> {
-        if !self.col0 {
-            writeln!(self.out)?;
-        }
-        writeln!(self.out, "{}", plain(s))?;
-        self.col0 = true;
-        Ok(())
-    }
-
-    fn prompt(&mut self) -> Result<()> {
-        if !self.col0 {
-            writeln!(self.out)?;
-        }
-        write!(self.out, "> ")?;
-        self.col0 = true;
-        Ok(self.out.flush()?)
-    }
-}
-
 struct Turn {
     id: u64,
     proc: Proc,
@@ -142,6 +100,9 @@ struct State {
     waiting: bool,
     ending: bool,
     exit: bool,
+    /// The pending messages and compactor calls as last shown.
+    pending: Vec<String>,
+    busy: usize,
 }
 
 pub struct Session<'a, 's> {
@@ -164,40 +125,45 @@ impl Session<'_, '_> {
         Ok(())
     }
 
-    fn unanswered(&mut self, texts: impl IntoIterator<Item = String>) -> Result<()> {
+    fn unanswered(
+        &mut self,
+        ui: &mut dyn Render,
+        texts: impl IntoIterator<Item = String>,
+    ) -> Result<()> {
         for text in texts {
             self.log(Kind::User, &text)?;
+            ui.show(Show::Unanswered(text))?;
         }
         Ok(())
     }
 
-    /// The chat loop (spec §7): prints the view, then runs a fresh call per batch of messages
+    /// The chat loop (spec §7): shows the view, then runs a fresh call per batch of messages
     /// until [`Event::Exit`], or [`Event::End`] once idle.
-    pub fn run(&mut self, events: Receiver<Event>, out: &mut impl Write) -> Result<()> {
+    pub fn run(&mut self, events: Receiver<Event>, ui: &mut dyn Render) -> Result<()> {
         let tx = self.spawn.tx.clone();
         self.compact.notify(move || {
             let _ = tx.send(Event::Compacted);
         });
-        let mut p = Printer { out, col0: true };
         let mut st = State {
             seen: self.compact.mem().render(),
             ..State::default()
         };
-        p.text(&format!("{}\n", st.seen))?;
-        p.prompt()?;
+        ui.show(Show::View(st.seen.clone()))?;
+        ui.show(Show::Ready)?;
         loop {
             self.compact.step(Duration::ZERO)?;
             for r in self.compact.take_reports() {
-                p.info(&format!("compactor: {r}"))?;
+                ui.show(Show::Compactor(r))?;
             }
             if let Some(done) = st.primer.tick(Instant::now()) {
-                self.primed(&mut st, &mut p, done)?;
+                self.primed(&mut st, ui, done)?;
             }
-            self.advance(&mut st, &mut p)?;
+            self.advance(&mut st, ui)?;
             if st.exit || st.ending && st.turn.is_none() && st.queue.is_empty() {
                 return Ok(());
             }
-            p.out.flush()?;
+            self.sync(&mut st, ui)?;
+            ui.flush()?;
             let deadline = [
                 st.changed.map(|at| at + IDLE),
                 st.primer.deadline(),
@@ -215,19 +181,34 @@ impl Session<'_, '_> {
                 },
                 None => events.recv().unwrap_or(Event::Exit),
             };
-            self.handle(&mut st, &mut p, first)?;
+            self.handle(&mut st, ui, first)?;
             while let Ok(ev) = events.try_recv() {
                 if st.exit {
                     break;
                 }
-                self.handle(&mut st, &mut p, ev)?;
+                self.handle(&mut st, ui, ev)?;
             }
         }
     }
 
+    /// Shows what changed in the messages pending and the compactor calls running.
+    fn sync(&self, st: &mut State, ui: &mut dyn Render) -> Result<()> {
+        let busy = self.compact.busy();
+        if busy != st.busy {
+            st.busy = busy;
+            ui.show(Show::Compacting(busy))?;
+        }
+        let pending = st.turn.iter().flat_map(|t| &t.sent).chain(&st.queue);
+        if !pending.clone().eq(&st.pending) {
+            st.pending = pending.cloned().collect();
+            ui.show(Show::Pending(st.pending.clone()))?;
+        }
+        Ok(())
+    }
+
     /// Starts what is due: the priming and then the turn for queued messages once every view
     /// line is a summary, else a background priming of a view that stayed unchanged.
-    fn advance<W: Write>(&mut self, st: &mut State, p: &mut Printer<W>) -> Result<()> {
+    fn advance(&mut self, st: &mut State, ui: &mut dyn Render) -> Result<()> {
         if st.turn.is_some() {
             return Ok(());
         }
@@ -237,10 +218,7 @@ impl Session<'_, '_> {
             if !mem.all_built() {
                 if !st.waiting {
                     let n = mem.view().iter().filter(|&&c| !mem.built(c)).count();
-                    p.info(&format!(
-                        "waiting for {} …",
-                        ai_memory::plural(n as u64, "summary")
-                    ))?;
+                    ui.show(Show::Waiting(n))?;
                     st.waiting = true;
                 }
                 return Ok(());
@@ -248,13 +226,15 @@ impl Session<'_, '_> {
             st.waiting = false;
             let view = mem.render();
             if self.prime && !st.primer.fresh(&view) && !st.primer.failed(&view) {
-                if let Err(e) = st.primer.start(self.master, &mut self.spawn, &view) {
-                    self.primed(st, p, Primed::No(format!("{e:#}")))?;
-                    return self.advance(st, p);
-                }
-                return Ok(());
+                return match st.primer.start(self.master, &mut self.spawn, &view) {
+                    Ok(()) => ui.show(Show::Priming),
+                    Err(e) => {
+                        self.primed(st, ui, Primed::No(format!("{e:#}")))?;
+                        self.advance(st, ui)
+                    }
+                };
             }
-            return self.ask(st, p, &view);
+            return self.ask(st, ui, &view);
         }
         let view = self.compact.mem().render();
         if view != st.seen {
@@ -264,23 +244,26 @@ impl Session<'_, '_> {
         let due = st.changed.is_some_and(|at| at.elapsed() >= IDLE);
         if due && self.prime && st.primer.running().is_none() {
             st.changed = None;
-            if self.compact.mem().all_built()
-                && !st.primer.fresh(&st.seen)
-                && let Err(e) = st.primer.start(self.master, &mut self.spawn, &st.seen)
-            {
-                self.primed(st, p, Primed::No(format!("{e:#}")))?;
+            if self.compact.mem().all_built() && !st.primer.fresh(&st.seen) {
+                match st.primer.start(self.master, &mut self.spawn, &st.seen) {
+                    Ok(()) => ui.show(Show::Priming)?,
+                    Err(e) => self.primed(st, ui, Primed::No(format!("{e:#}")))?,
+                }
             }
         }
         Ok(())
     }
 
     /// Logs the queued messages after rendering `view`, and sends both to a fresh call.
-    fn ask<W: Write>(&mut self, st: &mut State, p: &mut Printer<W>, view: &str) -> Result<()> {
+    fn ask(&mut self, st: &mut State, ui: &mut dyn Render, view: &str) -> Result<()> {
         let texts: Vec<_> = st.queue.drain(..).collect();
-        self.unanswered(texts.clone())?;
+        for text in &texts {
+            self.log(Kind::User, text)?;
+            ui.show(Show::User(text.clone()))?;
+        }
         let (id, mut proc) = match self.spawn.spawn(self.master.command(false), false) {
             Ok(call) => call,
-            Err(e) => return p.info(&format!("error: {e:#}")),
+            Err(e) => return ui.show(Show::Error(format!("error: {e:#}"))),
         };
         let mut msg: Vec<Block> = blocks(view)
             .into_iter()
@@ -295,24 +278,24 @@ impl Session<'_, '_> {
             mapper: Mapper::default(),
             cancelled: false,
         });
-        Ok(())
+        ui.show(Show::Turn)
     }
 
-    fn primed<W: Write>(&mut self, st: &mut State, p: &mut Printer<W>, done: Primed) -> Result<()> {
+    fn primed(&mut self, st: &mut State, ui: &mut dyn Render, done: Primed) -> Result<()> {
         match done {
-            Primed::Yes(info) => {
+            Primed::Yes { read, write } => {
                 st.prime_failed = false;
-                p.info(&info)
+                ui.show(Show::Primed { read, write })
             }
             Primed::No(why) if !st.prime_failed => {
                 st.prime_failed = true;
-                p.info(&format!("priming failed: {why}; proceeding unprimed"))
+                ui.show(Show::PrimeFailed(why))
             }
             Primed::No(_) => Ok(()),
         }
     }
 
-    fn handle<W: Write>(&mut self, st: &mut State, p: &mut Printer<W>, ev: Event) -> Result<()> {
+    fn handle(&mut self, st: &mut State, ui: &mut dyn Render, ev: Event) -> Result<()> {
         match ev {
             Event::Input(text) if text.trim().is_empty() => {}
             Event::Input(text) => match st.turn.as_mut().filter(|t| !t.cancelled) {
@@ -326,23 +309,23 @@ impl Session<'_, '_> {
                 if let Some(t) = st.turn.as_mut() {
                     t.cancelled = true;
                     t.proc.kill();
-                    p.info("cancelled")?;
+                    ui.show(Show::Cancelled)?;
                 } else if !st.queue.is_empty() {
-                    self.unanswered(std::mem::take(&mut st.queue))?;
+                    self.unanswered(ui, std::mem::take(&mut st.queue))?;
                     st.waiting = false;
-                    p.info("cancelled")?;
-                    p.prompt()?;
+                    ui.show(Show::Cancelled)?;
+                    ui.show(Show::Ready)?;
                 } else {
-                    p.info("Ctrl-D exits")?;
-                    p.prompt()?;
+                    ui.show(Show::Info("Ctrl-D exits".into()))?;
+                    ui.show(Show::Ready)?;
                 }
             }
             Event::Exit => {
                 if let Some(t) = st.turn.take() {
                     t.proc.kill();
-                    self.unanswered(t.sent)?;
+                    self.unanswered(ui, t.sent)?;
                 }
-                self.unanswered(std::mem::take(&mut st.queue))?;
+                self.unanswered(ui, std::mem::take(&mut st.queue))?;
                 st.exit = true;
             }
             Event::End => st.ending = true,
@@ -354,12 +337,12 @@ impl Session<'_, '_> {
                 if (line.is_none() || ev.is_some())
                     && let Some(done) = st.primer.line(id, ev.as_ref())
                 {
-                    self.primed(st, p, done)?;
+                    self.primed(st, ui, done)?;
                 }
                 if st.turn.as_ref().is_some_and(|t| t.id == id) {
                     match (line, ev) {
-                        (None, _) => self.finish(st, p, None)?,
-                        (Some(_), Some(ev)) => self.event(st, p, &ev)?,
+                        (None, _) => self.finish(st, ui, None)?,
+                        (Some(_), Some(ev)) => self.event(st, ui, &ev)?,
                         (Some(_), None) => {}
                     }
                 }
@@ -369,37 +352,38 @@ impl Session<'_, '_> {
     }
 
     /// Shows and logs one event of the running turn, in stream order.
-    fn event<W: Write>(&mut self, st: &mut State, p: &mut Printer<W>, ev: &Value) -> Result<()> {
+    fn event(&mut self, st: &mut State, ui: &mut dyn Render, ev: &Value) -> Result<()> {
         let t = st.turn.as_mut().expect("a running turn");
         let acts = t.mapper.map(ev);
-        if !t.mapper.model.is_empty() {
+        if !t.mapper.model.is_empty() && t.mapper.model != self.who.model {
             self.who.model.clone_from(&t.mapper.model);
+            ui.show(Show::Model(self.who.model.clone()))?;
         }
         for act in acts {
             match act {
-                Act::Show(text) => p.text(&text)?,
-                Act::Info(text) => p.info(&text)?,
+                Act::Show(s) => ui.show(s)?,
                 Act::Log(kind, text) => self.log(kind, &text)?,
                 Act::Taken => {
                     let taken = st.turn.as_mut().and_then(|t| t.sent.pop_front());
                     if let Some(text) = taken {
                         self.log(Kind::User, &text)?;
+                        ui.show(Show::User(text))?;
                     }
                 }
             }
         }
         if ev["type"] == "result" {
-            self.finish(st, p, Some(ev))?;
+            self.finish(st, ui, Some(ev))?;
         }
         Ok(())
     }
 
     /// Ends the turn. After a `result`, the messages the call never took go back to the queue
     /// for a fresh call; after a cancel or a crash they are logged, unanswered.
-    fn finish<W: Write>(
+    fn finish(
         &mut self,
         st: &mut State,
-        p: &mut Printer<W>,
+        ui: &mut dyn Render,
         result: Option<&Value>,
     ) -> Result<()> {
         let mut t = st.turn.take().expect("a running turn");
@@ -407,11 +391,11 @@ impl Session<'_, '_> {
         match result {
             Some(ev) => {
                 if let Err(e) = ai_memory::claude::reply(ev) {
-                    p.info(&e.to_string())?;
+                    ui.show(Show::Error(e.to_string()))?;
                 }
-                p.info(&usage(ev))?;
+                ui.show(Show::Usage(Usage::of(ev)))?;
             }
-            None if !t.cancelled => p.info(&t.proc.failure())?,
+            None if !t.cancelled => ui.show(Show::Error(t.proc.failure()))?,
             None => {}
         }
         match result.filter(|_| !t.cancelled) {
@@ -420,33 +404,22 @@ impl Session<'_, '_> {
                     st.queue.push_front(text);
                 }
             }
-            None => self.unanswered(t.sent)?,
+            None => self.unanswered(ui, t.sent)?,
         }
         if st.queue.is_empty() {
-            p.prompt()?;
+            ui.show(Show::Ready)?;
         }
         Ok(())
     }
 }
 
-fn usage(ev: &Value) -> String {
-    let u = &ev["usage"];
-    let n = |k: &str| u[k].as_u64().unwrap_or(0);
-    format!(
-        "{} in · {} read · {} write · {} out · {:.1} s",
-        n("input_tokens"),
-        n("cache_read_input_tokens"),
-        n("cache_creation_input_tokens"),
-        n("output_tokens"),
-        ev["duration_ms"].as_u64().unwrap_or(0) as f64 / 1000.0
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::Plain;
     use ai_memory::{Backend, Conversation, Options, Store};
     use anyhow::bail;
+    use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
     use std::{
         fs,
@@ -600,7 +573,7 @@ echo '{"type":"assistant","message":{"content":[{"type":"text","text":"BAD FOLLO
             who: Who::default(),
             prime: true,
         }
-        .run(rx, &mut out)
+        .run(rx, &mut Plain::new(&mut out))
         .unwrap();
         driver.join().unwrap();
         let snap = store.snapshot().unwrap();
@@ -696,7 +669,7 @@ echo '{"type":"assistant","message":{"content":[{"type":"text","text":"BAD FOLLO
             who: Who::default(),
             prime: false,
         }
-        .run(rx, &mut vec![])
+        .run(rx, &mut Plain::new(&mut vec![]))
         .unwrap();
         assert_eq!(
             store.snapshot().unwrap().message(1).unwrap().text,
@@ -742,7 +715,7 @@ sleep 60
             who: Who::default(),
             prime: true,
         }
-        .run(rx, &mut out)
+        .run(rx, &mut Plain::new(&mut out))
         .unwrap();
         let output = String::from_utf8(out.bytes).unwrap();
         assert!(output.contains("priming failed: claude: prime denied; proceeding unprimed"));
@@ -801,7 +774,7 @@ sleep 60
             who: Who::default(),
             prime: true,
         }
-        .run(rx, &mut vec![])
+        .run(rx, &mut Plain::new(&mut vec![]))
         .unwrap();
         driver.join().unwrap();
         assert!(!temp.path().join("master_called").exists());
@@ -847,7 +820,7 @@ sleep 60
                 who: Who::default(),
                 prime: false,
             }
-            .run(rx, &mut vec![])
+            .run(rx, &mut Plain::new(&mut vec![]))
             .unwrap();
             driver.join().unwrap();
             assert!(at.elapsed() < Duration::from_secs(3));
@@ -887,7 +860,7 @@ sleep 60
             who: Who::default(),
             prime: false,
         }
-        .run(rx, &mut vec![])
+        .run(rx, &mut Plain::new(&mut vec![]))
         .unwrap();
         driver.join().unwrap();
         assert!(at.elapsed() < Duration::from_secs(2));
@@ -954,7 +927,7 @@ sleep 60
         }
         let mut out = vec![];
         session(&mut compact, &master, tx, false)
-            .run(rx, &mut out)
+            .run(rx, &mut Plain::new(&mut out))
             .unwrap();
         let turns = lines(&temp.path().join("turns"));
         assert_eq!(turns.len(), 1);
@@ -967,6 +940,43 @@ sleep 60
         assert!(
             out.contains("done\n1 in · 2 read · 3 write · 4 out"),
             "{out}"
+        );
+    }
+
+    #[test]
+    fn plain_output_of_a_turn_is_exact() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let program = fake(
+            temp.path(),
+            r#"read -r initial
+echo '{"type":"system","subtype":"init","model":"fake","mcp_servers":[]}'
+echo '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","estimated_tokens":7}}}'
+echo '{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"x"},{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]}}'
+echo '{"type":"user","message":{"content":[{"type":"tool_result","is_error":true,"content":"a\u001b[31mb\nc"}]}}'
+echo '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"one\ntw"}}}'
+echo '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"o"}}}'
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"one\ntwo"}]}}'
+echo '{"type":"result","result":"one\ntwo","duration_ms":1234,"usage":{"input_tokens":1,"cache_read_input_tokens":2,"cache_creation_input_tokens":3,"output_tokens":4}}'
+sleep 60
+"#,
+        );
+        let (store, _) = Store::create(&temp.path().join("memory")).unwrap();
+        let mut compact = Compactor::new(&store, Arc::new(NoCalls), Options::default())
+            .unwrap()
+            .unwrap();
+        let master = Master::new(program, "opus", "high", "constant", "{}".into()).unwrap();
+        let (tx, rx) = channel();
+        tx.send(Event::Input("hi".into())).unwrap();
+        tx.send(Event::End).unwrap();
+        let mut out = vec![];
+        session(&mut compact, &master, tx, false)
+            .run(rx, &mut Plain::new(&mut out))
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "<chat>\n</chat>\n> warning: the memory MCP server is not connected: no zoom or date\n\
+             thought for ~7 tokens\n→ Bash {\"command\":\"ls\"}\n← a[31mb c\none\ntwo\n\
+             1 in · 2 read · 3 write · 4 out · 1.2 s\n> "
         );
     }
 
@@ -998,7 +1008,7 @@ while :; do sleep .05; done
         });
         let at = Instant::now();
         session(&mut compact, &master, tx, false)
-            .run(rx, &mut vec![])
+            .run(rx, &mut Plain::new(&mut vec![]))
             .unwrap();
         driver.join().unwrap();
         assert!(at.elapsed() < Duration::from_secs(3));
@@ -1061,7 +1071,7 @@ echo "$initial" >> turns
             (at_start, count("primes"))
         });
         session(&mut compact, &master, tx, true)
-            .run(rx, &mut vec![])
+            .run(rx, &mut Plain::new(&mut vec![]))
             .unwrap();
         let (at_start, primes) = driver.join().unwrap();
         assert_eq!((at_start, primes), (0, 3));

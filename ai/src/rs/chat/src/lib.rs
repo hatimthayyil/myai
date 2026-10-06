@@ -5,4 +5,6 @@ mod prime;
 mod prompt;
 mod session;
 mod stream;
+mod tui;
+mod ui;
 pub use cli::Cli;

@@ -1,17 +1,15 @@
 use ai_memory::Kind;
 use serde_json::Value;
 
-use crate::mcp::SERVER;
+use crate::{mcp::SERVER, ui::Show};
 
 pub const CAP: usize = 30_000;
 
 /// What one stream-json event of a turn asks for, in order.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Act {
-    /// Streamed reply text, shown as it comes.
-    Show(String),
-    /// A status line for the user, never logged.
-    Info(String),
+    /// Shown to the user, never logged.
+    Show(Show),
     Log(Kind, String),
     /// Claude took the oldest message sent to it mid-run.
     Taken,
@@ -73,9 +71,9 @@ impl Mapper {
                         .any(|s| s["name"] == SERVER && s["status"] == "connected")
                 });
                 if !ok {
-                    acts.push(Act::Info(format!(
+                    acts.push(Act::Show(Show::Error(format!(
                         "warning: the {SERVER} MCP server is not connected: no zoom or date"
-                    )));
+                    ))));
                 }
             }
             "stream_event" => {
@@ -84,7 +82,9 @@ impl Mapper {
                     match d["type"].as_str() {
                         Some("text_delta") => {
                             self.streamed = true;
-                            acts.push(Act::Show(d["text"].as_str().unwrap_or_default().into()))
+                            acts.push(Act::Show(Show::Text(
+                                d["text"].as_str().unwrap_or_default().into(),
+                            )))
                         }
                         Some("thinking_delta") => {
                             if let Some(n) = d["estimated_tokens"].as_u64() {
@@ -99,26 +99,25 @@ impl Mapper {
                 for b in ev["message"]["content"].as_array().into_iter().flatten() {
                     match b["type"].as_str() {
                         Some("thinking") => {
-                            acts.push(Act::Info(format!("thought for ~{} tokens", self.thought)));
+                            acts.push(Act::Show(Show::Thought(self.thought)));
                             self.thought = 0;
                         }
                         Some("text") => {
                             let t = b["text"].as_str().unwrap_or_default();
                             if !t.trim().is_empty() {
                                 if !self.streamed {
-                                    acts.push(Act::Show(t.into()));
+                                    acts.push(Act::Show(Show::Text(t.into())));
                                 }
                                 acts.push(Act::Log(Kind::Talk, t.into()));
                             }
                         }
                         Some("tool_use") => {
-                            let call = format!(
-                                "{} {}",
-                                b["name"].as_str().unwrap_or_default(),
-                                b["input"]
-                            );
-                            acts.push(Act::Info(format!("→ {}", clip(&call, 160))));
-                            acts.push(Act::Log(Kind::Tool, call));
+                            let name = b["name"].as_str().unwrap_or_default();
+                            acts.push(Act::Show(Show::Call {
+                                name: name.into(),
+                                input: b["input"].clone(),
+                            }));
+                            acts.push(Act::Log(Kind::Tool, format!("{name} {}", b["input"])));
                         }
                         _ => {}
                     }
@@ -135,8 +134,11 @@ impl Mapper {
                 for b in ev["message"]["content"].as_array().into_iter().flatten() {
                     if b["type"] == "tool_result" {
                         let t = result_text(&b["content"]);
-                        acts.push(Act::Info(format!("← {}", clip(&t, 160))));
                         acts.push(Act::Log(Kind::Echo, cap(&t)));
+                        acts.push(Act::Show(Show::Result {
+                            text: t,
+                            error: b["is_error"] == true,
+                        }));
                     }
                 }
             }
@@ -167,7 +169,7 @@ mod tests {
             {"type": "tool_result", "content": [{"type": "text", "text": "a"}, {"type": "image"}]}
         ]}});
         assert_eq!(
-            Mapper::default().map(&e)[1],
+            Mapper::default().map(&e)[0],
             Act::Log(Kind::Echo, "a\n[image]".into())
         );
     }
@@ -202,16 +204,12 @@ mod tests {
         let shown: String = acts
             .iter()
             .filter_map(|a| match a {
-                Act::Show(s) => Some(s.as_str()),
+                Act::Show(Show::Text(s)) => Some(s.as_str()),
                 _ => None,
             })
             .collect();
         assert_eq!(shown, logs[6].1);
-        assert!(
-            !acts
-                .iter()
-                .any(|a| matches!(a, Act::Info(i) if i.starts_with("warning")))
-        );
+        assert!(!acts.iter().any(|a| matches!(a, Act::Show(Show::Error(_)))));
         assert!(
             !acts.contains(&Act::Taken),
             "the opening replay is not a mid-run message"
@@ -224,7 +222,7 @@ mod tests {
         assert_eq!(logs(&acts), [(Kind::Talk, "142")]);
         let thoughts = acts
             .iter()
-            .filter(|a| matches!(a, Act::Info(i) if i.starts_with("thought for ~")))
+            .filter(|a| matches!(a, Act::Show(Show::Thought(_))))
             .count();
         assert_eq!(thoughts, 1);
         assert_eq!(clip("ab", 2), "ab");
