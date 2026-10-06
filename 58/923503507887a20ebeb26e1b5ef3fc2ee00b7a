@@ -1,0 +1,19 @@
+ai/research/20261006T223048---ai-chat-tui-dx.md
+  s_c643e4b55d544b::t_c23764c990604d 1-65
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "58923503507887a20ebeb26e1b5ef3fc2ee00b7a",
+  "prompts": {},
+  "sessions": {
+    "s_c643e4b55d544b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "495c25ad-678a-4317-9362-b6e102ff8e5b",
+        "model": "unknown"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
