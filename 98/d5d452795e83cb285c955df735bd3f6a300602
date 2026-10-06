@@ -1,0 +1,29 @@
+Cargo.lock
+  s_c643e4b55d544b::t_2d1ffd66beb93b 22,30,49,1723
+Cargo.toml
+  s_c643e4b55d544b::t_392952f9dcf78a 3
+ai/backlog.md
+  s_c643e4b55d544b::t_4ce891cdbb846f 6
+ai/src/rs/ai/Cargo.toml
+  s_c643e4b55d544b::t_7d3575a175f360 3
+ai/src/rs/chat/Cargo.toml
+  s_c643e4b55d544b::t_8cf28591124afc 3
+ai/src/rs/memory/Cargo.toml
+  s_c643e4b55d544b::t_8a61f4d30e4443 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "98d5d452795e83cb285c955df735bd3f6a300602",
+  "prompts": {},
+  "sessions": {
+    "s_c643e4b55d544b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "495c25ad-678a-4317-9362-b6e102ff8e5b",
+        "model": "unknown"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
