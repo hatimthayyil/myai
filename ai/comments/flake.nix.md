@@ -1,8 +1,8 @@
 # flake.nix
 
 - The single package definition for `ai` (devenv is only the dev shell). Install and update:
-  - `nix profile add /hatimthayyil/code/myai` (profile element is named `myai`)
-  - `nix profile upgrade myai`
+  - `nix profile add /hatimthayyil/code/myai#ai` (the profile element takes the attribute name, `ai`; `#default` would be named after the directory, `myai`)
+  - `nix profile upgrade ai`
   - Build locally: `nix build` → `./result/bin/ai`
 - A local path with `.git` is fetched as `git+file`, so only git-tracked files reach the store (`target/` never does). New files must be `git add`ed before nix sees them. `src` is further narrowed with `lib.fileset` to the Rust sources, so doc edits do not trigger rebuilds.
 - `rustPlatform.buildRustPackage` with `cargoLock.lockFile`: no generated Nix, no extra inputs. Replaced devenv's crate2nix-based `languages.rust.import`. nixos-unstable's rustc supports edition 2024.
