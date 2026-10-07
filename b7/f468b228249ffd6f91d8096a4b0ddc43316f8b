@@ -1,0 +1,114 @@
+ai/comments/ai/src/rs/memory/src/view.rs.md
+  s_32552ebd17482d::t_df4ab8d597a917 7
+ai/src/rs/memory/src/tree.rs
+  s_32552ebd17482d::t_570ac496bfaffa 72,74-78
+ai/src/rs/memory/src/view.rs
+  s_32552ebd17482d::t_1955a04f205420 7-8
+  s_32552ebd17482d::t_1eb170edf591ee 1
+  s_32552ebd17482d::t_50ceb8fe038157 166,174
+  s_32552ebd17482d::t_c36997f86dda52 203,207
+ai/src/rs/chat/prompts/view_doc.txt
+  s_32552ebd17482d::t_b468b189803475 7-13
+  s_32552ebd17482d::t_52f9f51677f59a 6
+  s_32552ebd17482d::t_f5ffc15d1104f5 14-15
+ai/src/rs/memory/src/zoom.rs
+  s_32552ebd17482d::t_b51969d276422a 22-23
+  s_32552ebd17482d::t_19af9748496fcd 3
+tests/cli.rs
+  s_32552ebd17482d::t_c8d89211a3f6a8 506
+  s_32552ebd17482d::t_a73f199e3dac66 623-624,627,682,701
+ai/src/rs/memory/src/lib.rs
+  s_32552ebd17482d::t_86c9dec1858edd 6,22
+  s_32552ebd17482d::t_d14c9a8eb4d360 26
+ai/src/rs/chat/prompts/master.txt
+  s_32552ebd17482d::t_6cf8749c85c775 7-9
+ai/comments/ai/src/rs/memory/src/compact.rs.md
+  s_32552ebd17482d::t_df4ab8d597a917 6
+ai/comments/ai/src/rs/memory/src/record.rs.md
+  s_32552ebd17482d::t_0e5bd91bd1ec8b 3
+ai/comments/ai/src/rs/memory/src/cover.rs.md
+  s_32552ebd17482d::t_df4ab8d597a917 1-3
+ai/src/rs/ai/Cargo.toml
+  s_32552ebd17482d::t_0c7269df6cb851 3
+ai/src/rs/memory/src/config.rs
+  s_32552ebd17482d::t_464937a3cd6a64 14,21-26,30,39,48-49,57,86
+ai/src/rs/memory/prompts/compact.txt
+  s_32552ebd17482d::t_4195efd4e1fd6b 1-4,13,15-18,23-25,27-28,30,35,38-41
+ai/backlog.md
+  s_32552ebd17482d::t_9034f959b5cc19 7-8
+ai/src/rs/memory/src/compact.rs
+  s_32552ebd17482d::t_d5831c87ee75c5 78,80
+  s_32552ebd17482d::t_6f7c597c2a3078 237-238,243,245-246
+  s_32552ebd17482d::t_5156b56415e097 358,376,379,382-384,387
+  s_32552ebd17482d::t_3436492cd65609 388,390,392
+ai/src/rs/memory/src/store.rs
+  s_32552ebd17482d::t_570ac496bfaffa 372-374,392
+Cargo.toml
+  s_32552ebd17482d::t_0c7269df6cb851 3
+ai/src/rs/memory/src/cover.rs
+  s_32552ebd17482d::t_055087da1250af 1-72,75-78
+  s_32552ebd17482d::t_94fda4bc9d36f5 73
+  s_32552ebd17482d::t_15d196d1560422 74
+ai/src/rs/memory/tests/memory.rs
+  s_32552ebd17482d::t_681421fd81e46f 633-644
+  s_32552ebd17482d::t_82c25e8bc1cf95 341-344,357,359,361-366,370-371,373,375,381-382,468
+  s_32552ebd17482d::t_11f5825b452b20 414,425-426,430,777
+  s_32552ebd17482d::t_c8d89211a3f6a8 295,300-301,304-306,310-312
+  s_32552ebd17482d::t_f7b4ec32c0f01e 172-174,177-179
+  s_32552ebd17482d::t_d14c9a8eb4d360 16
+  s_32552ebd17482d::t_5b05ea602de821 599,604,608,802
+  s_32552ebd17482d::t_6f2b2532b385fe 340
+  s_32552ebd17482d::t_8889d164a1e5a1 329-330,393,397
+ai/src/rs/memory/Cargo.toml
+  s_32552ebd17482d::t_0c7269df6cb851 3
+ai/src/rs/memory/src/cli.rs
+  s_32552ebd17482d::t_75d4eca857ee5b 60-65
+  s_32552ebd17482d::t_c4c0358262774f 318-321
+  s_32552ebd17482d::t_86c9dec1858edd 21,24
+  s_32552ebd17482d::t_31375d4549c588 350-364
+ai/src/rs/memory/src/claude.rs
+  s_32552ebd17482d::t_af2702dff9d8de 303-304,306-307,310,313,435
+ai/evals/compactor/keep.py
+  s_32552ebd17482d::t_9034f959b5cc19 1-36
+ai/src/rs/memory/prompts/scale.txt
+  s_32552ebd17482d::t_edfc1837a5543e 1
+ai/evals/compactor/README.md
+  s_32552ebd17482d::t_9034f959b5cc19 1-11
+ai/src/rs/memory/src/record.rs
+  s_32552ebd17482d::t_570ac496bfaffa 26-30,157-161,198
+  s_32552ebd17482d::t_74500d2a36f1ef 9,15,20,234,255,263,298
+ai/src/rs/chat/src/cli.rs
+  s_32552ebd17482d::t_304d758c0efa21 56
+ai/src/rs/chat/Cargo.toml
+  s_32552ebd17482d::t_0c7269df6cb851 3
+ai/comments/ai/src/rs/memory/src/cli.rs.md
+  s_32552ebd17482d::t_df4ab8d597a917 4
+Cargo.lock
+  s_32552ebd17482d::t_8064c239faf26f 22,30,49,1723
+ai/src/rs/chat/src/prompt.rs
+  s_32552ebd17482d::t_9a48decf0ddb7b 41
+ai/comments/tests/cli.rs.md
+  s_32552ebd17482d::t_42a876a3eaa3ba 7
+ai/src/rs/chat/src/mcp.rs
+  s_32552ebd17482d::t_bdf68b41aca1f5 141
+ai/src/rs/chat/src/session.rs
+  s_32552ebd17482d::t_ebdd0d932f0083 391-393,538-539,592,596,935,1017,1092
+ai/src/rs/chat/src/stream.rs
+  s_32552ebd17482d::t_02c2d5bd9de7ee 53-55,59,113,122-124,141-149,157-164,189,216-221,229,237-257,261
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b7f468b228249ffd6f91d8096a4b0ddc43316f8b",
+  "prompts": {},
+  "sessions": {
+    "s_32552ebd17482d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a87491ed-08a1-4f25-a17f-a6bc58caa31a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
