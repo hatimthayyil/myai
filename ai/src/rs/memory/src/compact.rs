@@ -39,7 +39,6 @@ pub enum Step {
 #[derive(Clone, Debug)]
 pub struct Job {
     pub node: Coord,
-    pub context: Vec<String>,
     pub step: Step,
 }
 
@@ -76,21 +75,9 @@ fn step_text(step: &Step) -> String {
     }
 }
 
-/// The user message of a call: the bare context lines in `<chat>`, cut at [`MARKS`] and
-/// each piece cached, then the step. No ids anywhere: the model would copy them.
+/// The user message of a call: the step alone, with no ids (the model would copy them).
 pub fn message(job: &Job) -> Vec<Block> {
-    let mut chat = String::from("<chat>\n");
-    for l in &job.context {
-        chat += &flat(l);
-        chat.push('\n');
-    }
-    chat += "</chat>";
-    let mut blocks: Vec<_> = cut_blocks(&chat, &MARKS)
-        .into_iter()
-        .map(|t| Block::new(t, true))
-        .collect();
-    blocks.push(Block::new(step_text(&job.step), false));
-    blocks
+    vec![Block::new(step_text(&job.step), false)]
 }
 
 /// `line` cut to its first [`NODE`] bytes, never inside a character.
@@ -247,23 +234,16 @@ impl<'s> Compactor<'s> {
     }
 
     fn job(&self, c: Coord) -> Result<Job> {
-        Ok(match c.l {
-            0 => Job {
-                node: c,
-                context: self.mem.context(c.i)?,
-                step: Step::Compress(self.store.snapshot()?.message(c.i)?.label()),
-            },
+        let step = match c.l {
+            0 => Step::Compress(self.store.snapshot()?.message(c.i)?.label()),
             _ => {
                 let [a, b] = c
                     .children()
                     .map(|k| self.mem.text(k).unwrap_or_default().to_string());
-                Job {
-                    node: c,
-                    context: self.mem.context(c.end())?,
-                    step: Step::Merge(a, b),
-                }
+                Step::Merge(a, b)
             }
-        })
+        };
+        Ok(Job { node: c, step })
     }
 
     /// Starts every node that is due, up to `jobs` running.
@@ -375,7 +355,7 @@ mod tests {
     fn prompts_are_the_spec_s() {
         assert_eq!(SCALE.len(), NODE);
         assert!(!SCALE.contains('\n'));
-        assert!(COMPACT.starts_with("You write the memory of MyAI, an AI agent"));
+        assert!(COMPACT.starts_with("You write the memory of MyAI: AI agents"));
         assert!(!COMPACT.contains("OptChat"));
         assert!(
             COMPACT
@@ -393,28 +373,23 @@ mod tests {
     }
 
     #[test]
-    fn steps_carry_no_ids() {
+    fn steps_carry_no_ids_and_no_context() {
         let job = Job {
             node: Coord::new(1, 0),
-            context: vec!["user: hi\nthere".into(), "talk: hello".into()],
-            step: Step::Merge("user: hi".into(), "talk: a\nb".into()),
+            step: Step::Merge("user: hi".into(), "ai: a\nb".into()),
         };
         let m = message(&job);
-        assert_eq!(m.len(), 2);
-        assert_eq!(
-            m[0],
-            Block::new("<chat>\nuser: hi there\ntalk: hello\n</chat>", true)
-        );
-        assert!(!m[1].cache);
-        assert!(m[1].text.starts_with(&format!(
+        assert_eq!(m.len(), 1, "the step alone: no context");
+        assert!(!m[0].cache);
+        assert!(m[0].text.starts_with(&format!(
             "For scale, this line is exactly 512 bytes:\n{SCALE}\n\n"
         )));
-        assert!(m[1].text.ends_with(
-            "Merge these two lines into one, in at most 512 bytes:\nuser: hi\ntalk: a b"
+        assert!(m[0].text.ends_with(
+            "Merge these two lines into one, in at most 512 bytes:\nuser: hi\nai: a b"
         ));
-        let c = step_text(&Step::Compress("echo: x\ny".into()));
+        let c = step_text(&Step::Compress("tool: x\ny".into()));
         assert!(
-            c.ends_with("Compress this message into one line, in at most 512 bytes:\necho: x\ny")
+            c.ends_with("Compress this message into one line, in at most 512 bytes:\ntool: x\ny")
         );
     }
 

@@ -53,7 +53,7 @@ impl Cli {
             &system_prompt(home.as_deref(), &cwd)?,
             mcp_config(&std::env::current_exe()?, &dir),
         )?;
-        let backend = Arc::new(ClaudeCode::compactor_at(program)?);
+        let backend = Arc::new(ClaudeCode::compactor_at(program, "sonnet")?);
         let mut waited = false;
         let mut compact = loop {
             if let Some(c) = Compactor::new(&store, backend.clone(), Options::default())? {

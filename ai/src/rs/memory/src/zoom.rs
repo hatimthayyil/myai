@@ -1,6 +1,6 @@
 use anyhow::{Result, bail};
 
-use crate::{store::Snapshot, tree::Coord};
+use crate::{store::Snapshot, tree::Coord, view::HIDDEN};
 
 /// Line `id+n` opened: the two lines of `n/2` under it, or for `n = 1` the message whole.
 /// `None` when `id+n` is not a built line.
@@ -19,7 +19,8 @@ pub fn zoom(s: &Snapshot, id: u64, n: u64) -> Result<Option<String>> {
         let Some(node) = s.node(k)? else {
             return Ok(None);
         };
-        lines.push(format!("{k}|{}", node.text));
+        let text = if node.text.is_empty() { HIDDEN } else { &node.text };
+        lines.push(format!("{k}|{text}"));
     }
     Ok(Some(lines.join("\n")))
 }

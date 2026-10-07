@@ -69,8 +69,13 @@ pub fn free(text: String) -> Option<String> {
     (text.len() <= NODE).then_some(text)
 }
 
+/// `a` and `b` as one line; an empty side (hidden tool calls) adds nothing.
 pub fn joined(a: &str, b: &str) -> String {
-    format!("{a} {b}")
+    match (a.is_empty(), b.is_empty()) {
+        (true, _) => b.into(),
+        (_, true) => a.into(),
+        _ => format!("{a} {b}"),
+    }
 }
 
 #[cfg(test)]

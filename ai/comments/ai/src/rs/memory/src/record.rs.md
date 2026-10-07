@@ -1,6 +1,6 @@
 # record.rs
 
-- `Kind`: user, talk, tool, echo, note (OptChat spec §2). `note` = `ai memory note` / `import`.
+- `Kind`: user, ai, tool, note. Spec §2 has `talk` and `echo`; here a reply is `ai` and a tool call and its result are one `tool` message. A tool message's leaf is empty (`Kind::shown`, `Message::line`): the view and compactor context skip empty lines, a merge with an empty side is the other side verbatim (no model call), zoom shows it as `HIDDEN`, `zoom id+1` and grep still give it whole. `note` = `ai memory note` / `import`.
 - `Message`: blob = one header line of space-separated fields (whitespace in a field becomes `_`, empty becomes `-`), `\n`, then the text verbatim (newlines kept: `zoom id+1` returns it whole). No size limit. `ts` UTC `YYYYMMDDThhmmssZ`; no ordering key (sync is gone).
 - `label`: `kind: text`, what the tree compresses and what a free leaf holds.
 - `Message.origin`: the writing store's id; empty in `Message::new`, filled by `Store::append` (a given origin is kept, so a rebuild can carry old ones).

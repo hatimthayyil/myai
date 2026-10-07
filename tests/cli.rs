@@ -503,7 +503,7 @@ fn a_note_naps_in_the_background() {
     for i in 0..2 {
         let r = s
             .cmd(s.path(), Some(&s.store()))
-            .args(["note", &format!("note {i} {}", "z".repeat(400))])
+            .args(["note", &format!("note {i} {}", "z".repeat(250))])
             .env("AI_MEMORY_NAP", "1")
             .env("PATH", &path)
             .output()
@@ -620,12 +620,11 @@ fn a_chat_turn_end_to_end_with_a_fake_claude() {
         [
             "note: the code word is papaya",
             "user: what is the code word?",
-            r#"tool: mcp__memory__zoom {"id":0,"n":1}"#,
-            "echo: 0+0|note: the code word is papaya",
-            "talk: It is papaya.",
+            "tool: mcp__memory__zoom {\"id\":0,\"n\":1}\n0+0|note: the code word is papaya",
+            "ai: It is papaya.",
         ]
     );
-    let m = &s.memories()[4];
+    let m = &s.memories()[3];
     assert_eq!(
         (m.who.agent.as_str(), m.who.model.as_str()),
         ("ai-chat", "claude-fake")
@@ -680,7 +679,7 @@ fn a_chat_turn_end_to_end_with_a_fake_claude() {
         let mut stdin = mcp.stdin.take().unwrap();
         for req in [
             r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
-            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"zoom","arguments":{"id":4,"n":1}}}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"zoom","arguments":{"id":3,"n":1}}}"#,
             r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"zoom","arguments":{"id":0,"n":4}}}"#,
             r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"date","arguments":{"id":9}}}"#,
         ] {
@@ -699,7 +698,7 @@ fn a_chat_turn_end_to_end_with_a_fake_claude() {
             .to_string()
     };
     assert_eq!(replies[0]["result"]["serverInfo"]["name"], "memory");
-    assert_eq!(said(1), "4+0|talk: It is papaya.");
+    assert_eq!(said(1), "3+0|ai: It is papaya.");
     assert!(
         said(2).starts_with("0+2|note: the code word is papaya user: what is"),
         "{}",

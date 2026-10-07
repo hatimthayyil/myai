@@ -6,23 +6,26 @@ const TS: &str = "%Y%m%dT%H%M%SZ";
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, clap::ValueEnum)]
 pub enum Kind {
     User,
-    Talk,
+    Ai,
     Tool,
-    Echo,
     Note,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 5] = [Kind::User, Kind::Talk, Kind::Tool, Kind::Echo, Kind::Note];
+    pub const ALL: [Kind; 4] = [Kind::User, Kind::Ai, Kind::Tool, Kind::Note];
 
     pub fn name(self) -> &'static str {
         match self {
             Kind::User => "user",
-            Kind::Talk => "talk",
+            Kind::Ai => "ai",
             Kind::Tool => "tool",
-            Kind::Echo => "echo",
             Kind::Note => "note",
         }
+    }
+
+    /// Whether this kind shows in the view: a tool call's line is empty, seen only by zooming.
+    pub fn shown(self) -> bool {
+        self != Kind::Tool
     }
 
     pub fn parse(s: &str) -> Option<Kind> {
@@ -151,6 +154,11 @@ impl Message {
         format!("{}: {}", self.kind.name(), self.text)
     }
 
+    /// Its leaf: the flat label, or empty for a kind not [`Kind::shown`].
+    pub fn line(&self) -> String {
+        if self.kind.shown() { flat(&self.label()) } else { String::new() }
+    }
+
     pub fn date(&self) -> String {
         date(&self.ts)
     }
@@ -187,7 +195,7 @@ impl Node {
     pub fn decode(line: &str) -> Option<Node> {
         let mut f = line.splitn(6, ' ');
         let [ts, origin, agent, model, session, text] = [(); 6].map(|_| f.next().unwrap_or(""));
-        (valid_ts(ts) && !text.is_empty()).then(|| Node {
+        valid_ts(ts).then(|| Node {
             ts: ts.into(),
             origin: origin.into(),
             who: Who {
@@ -223,7 +231,7 @@ mod tests {
     fn message() -> Message {
         Message {
             ts: "20261003T142233Z".into(),
-            kind: Kind::Echo,
+            kind: Kind::Tool,
             origin: "7KQ2ZD".into(),
             place: Place {
                 repo: "acme/widget".into(),
@@ -244,7 +252,7 @@ mod tests {
         let m = message();
         let b = m.encode();
         assert!(
-            b.starts_with(b"20261003T142233Z echo 7KQ2ZD acme/widget 0123456789ab feature/a_b ")
+            b.starts_with(b"20261003T142233Z tool 7KQ2ZD acme/widget 0123456789ab feature/a_b ")
         );
         let back = Message::decode(&b).unwrap();
         assert_eq!(back.origin, "7KQ2ZD");
@@ -252,7 +260,7 @@ mod tests {
         assert_eq!(back.who.model, "-");
         assert_eq!(back.who.session, "ünï");
         assert_eq!(back.text, m.text);
-        assert_eq!(back.label(), "echo: line one\nline two\n");
+        assert_eq!(back.label(), "tool: line one\nline two\n");
         assert_eq!(back.stamp(), "2026-10-03 14:22 7KQ2ZD acme/widget");
         let tz = TimeZone::fixed(jiff::tz::offset(-15));
         assert_eq!(back.time_in(&tz), "2026-10-02 23:22");
@@ -287,7 +295,7 @@ mod tests {
         assert_eq!(back.text, "a b c");
         assert_eq!(Node::decode(&back.encode()), Some(back));
         assert!(Node::decode("").is_none());
-        assert!(Node::decode("20261003T142233Z O a m s").is_none());
+        assert_eq!(Node::decode("20261003T142233Z O a m s ").unwrap().text, "");
         assert_eq!(Kind::parse("note"), Some(Kind::Note));
         assert_eq!(Kind::parse("work"), None);
     }

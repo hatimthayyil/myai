@@ -369,6 +369,9 @@ impl<'a, 's> Edit<'a, 's> {
         let (Some(a), Some(b)) = (self.text(a)?, self.text(b)?) else {
             return Ok(());
         };
+        if a.is_empty() || b.is_empty() {
+            return self.put(p, &Who::default(), &joined(&a, &b));
+        }
         match free(joined(&a, &b)) {
             Some(text) => self.put(p, &Who::default(), &text),
             None => Ok(()),
@@ -386,7 +389,7 @@ impl<'a, 's> Edit<'a, 's> {
         }
         self.ch.put(fan_path(LOG, i), m.encode());
         self.t += 1;
-        match free(crate::record::flat(&m.label())) {
+        match free(m.line()) {
             Some(text) => self.put(Coord::leaf(i), &Who::default(), &text),
             None => Ok(()),
         }

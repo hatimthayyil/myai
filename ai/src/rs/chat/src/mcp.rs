@@ -138,7 +138,7 @@ mod tests {
                 "test",
                 &[
                     Message::new(Kind::User, &"é".repeat(35_000)),
-                    Message::new(Kind::Talk, "short"),
+                    Message::new(Kind::Ai, "short"),
                 ],
             )
             .unwrap();

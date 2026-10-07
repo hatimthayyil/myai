@@ -18,9 +18,10 @@ use crate::{
     grep::{Grep, grep},
     prov,
     record::{Kind, Message, midnight},
+    cover::cover,
     store::{AtPath, ME, Snapshot, Store, pretty},
     tree::Coord,
-    view::{Mem, VIEW},
+    view::{Mem, PLACEHOLDER, VIEW},
     zoom::{page, zoom},
 };
 
@@ -56,12 +57,12 @@ Never edit or delete anything under `{data}`: the tool manages it.
 
 ### Reading it: the view, zoom, grep
 
-`wake` prints the view: the whole memory, oldest first, as one-line
-summaries. Each line is `id+n|text`, the n messages from id on. A short
-message is its own line, word for word; the older the messages, the more
-a line covers. Items are tagged with their kind: user, talk, tool, echo
-(a chat with the user: their words, the agent's replies, its tool calls
-and their results) or note (what sessions like this one noted).
+`wake` prints the view: the whole memory in a fixed number of one-line
+summaries, oldest first. Each line is `id+n|text`, the n messages from
+id on. A short message is its own line, word for word; the older the
+messages, the more a line covers. Items are tagged with their kind:
+note (what sessions like this one noted), or user and ai (a chat with
+the user).
 
 `{memo} zoom <id+n>` opens a line into the two lines of n/2 it was made
 from; `{memo} zoom <id>+1` gives message id in full. Zoom whenever a line
@@ -314,10 +315,10 @@ fn wake(s: &Store, out: &mut dyn Write, k: u64, commit: Option<&str>) -> Result<
         writeln!(out, "You are awake.")?;
         return Ok(ExitCode::SUCCESS);
     };
-    let mem = Mem::load(&snap, VIEW)?;
-    let mut lines = vec!["<chat>".to_string()];
-    lines.extend(mem.lines());
-    lines.push("</chat>".into());
+    let mut lines = Vec::new();
+    for c in cover(t, s.cfg.get(Knob::WakeLines)) {
+        wake_lines(&snap, c, &mut lines)?;
+    }
     let parts = paginate(
         lines,
         s.cfg.get(Knob::PartLines),
@@ -344,6 +345,21 @@ fn wake(s: &Store, out: &mut dyn Write, k: u64, commit: Option<&str>) -> Result<
         writeln!(out, "You are awake.")?;
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Line `c`, or its halves' lines while its summary is not built; tool calls have none.
+fn wake_lines(snap: &Snapshot, c: Coord, out: &mut Vec<String>) -> Result<()> {
+    match snap.node(c)? {
+        Some(n) if n.text.is_empty() => {}
+        Some(n) => out.push(format!("{c}|{}", n.text)),
+        None if c.l == 0 => out.push(format!("{c}|{PLACEHOLDER}")),
+        None => {
+            for k in c.children() {
+                wake_lines(snap, k, out)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn note(s: &Store, out: &mut dyn Write, text: &str, rt: &Runtime) -> Result<ExitCode> {

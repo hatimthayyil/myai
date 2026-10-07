@@ -388,6 +388,9 @@ impl Session<'_, '_> {
     ) -> Result<()> {
         let mut t = st.turn.take().expect("a running turn");
         t.proc.kill();
+        for text in t.mapper.unfinished() {
+            self.log(Kind::Tool, &text)?;
+        }
         match result {
             Some(ev) => {
                 if let Err(e) = ai_memory::claude::reply(ev) {
@@ -532,8 +535,8 @@ if [ ! -f first ]; then
   read -r steering
   echo '{"type":"user","isReplay":true}'
   read -r pending
-  echo '{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"SECRET"},{"type":"tool_use","name":"Read","input":{"file_path":"x"}}]}}'
-  echo '{"type":"user","message":{"content":[{"type":"tool_result","content":"tool output"}]}}'
+  echo '{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"SECRET"},{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"x"}}]}}'
+  echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"tool output"}]}}'
   touch first
 fi
 echo '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"reply"}}}'
@@ -586,16 +589,11 @@ echo '{"type":"assistant","message":{"content":[{"type":"text","text":"BAD FOLLO
             .map(|m| m.text.as_str())
             .collect();
         assert_eq!(users, ["opening", "taken", "pending"]);
-        assert_eq!(messages.iter().filter(|m| m.kind == Kind::Talk).count(), 2);
+        assert_eq!(messages.iter().filter(|m| m.kind == Kind::Ai).count(), 2);
         assert!(
             messages
                 .iter()
-                .any(|m| m.kind == Kind::Tool && m.text == "Read {\"file_path\":\"x\"}")
-        );
-        assert!(
-            messages
-                .iter()
-                .any(|m| m.kind == Kind::Echo && m.text == "tool output")
+                .any(|m| m.kind == Kind::Tool && m.text == "Read {\"file_path\":\"x\"}\ntool output")
         );
         assert!(
             messages
@@ -934,7 +932,7 @@ sleep 60
         let content = turns[0]["message"]["content"].as_array().unwrap();
         assert_eq!(content.last().unwrap()["text"], "a\n\nb");
         assert_eq!(content[0]["text"], "<chat>\n</chat>");
-        assert_eq!(kinds(&store), ["user: a", "user: b", "talk: done"]);
+        assert_eq!(kinds(&store), ["user: a", "user: b", "ai: done"]);
         let out = String::from_utf8(out).unwrap();
         assert!(out.starts_with("<chat>\n</chat>\n> "), "{out}");
         assert!(
@@ -1016,8 +1014,7 @@ while :; do sleep .05; done
             kinds(&store),
             [
                 "user: go",
-                r#"tool: Bash {"command":"sleep 99"}"#,
-                "echo: killed",
+                "tool: Bash {\"command\":\"sleep 99\"}\nkilled",
                 "user: never taken"
             ]
         );
@@ -1092,6 +1089,6 @@ echo "$initial" >> turns
             "turn two reuses the background priming"
         );
         assert_ne!(texts(&p[1]), texts(&p[2]));
-        assert!(texts(&t[1])[0].as_str().unwrap().contains("talk: done"));
+        assert!(texts(&t[1])[0].as_str().unwrap().contains("ai: done"));
     }
 }

@@ -50,11 +50,13 @@ fn result_text(c: &Value) -> String {
     }
 }
 
-/// Maps a turn's events to acts (spec §7): replies are `talk`, tool calls `tool` (name and
-/// JSON input), results `echo` (capped). Thinking is never logged.
+/// Maps a turn's events to acts (spec §7): replies are `ai`; a tool call is one `tool` message,
+/// its name and JSON input on the first line, then its result (capped), logged once the result
+/// arrives. Thinking is never logged.
 #[derive(Default)]
 pub struct Mapper {
     replays: usize,
+    calls: Vec<(String, String)>,
     thought: u64,
     streamed: bool,
     pub model: String,
@@ -108,7 +110,7 @@ impl Mapper {
                                 if !self.streamed {
                                     acts.push(Act::Show(Show::Text(t.into())));
                                 }
-                                acts.push(Act::Log(Kind::Talk, t.into()));
+                                acts.push(Act::Log(Kind::Ai, t.into()));
                             }
                         }
                         Some("tool_use") => {
@@ -117,7 +119,9 @@ impl Mapper {
                                 name: name.into(),
                                 input: b["input"].clone(),
                             }));
-                            acts.push(Act::Log(Kind::Tool, format!("{name} {}", b["input"])));
+                            let id = b["id"].as_str().unwrap_or_default();
+                            self.calls
+                                .push((id.into(), format!("{name} {}", b["input"])));
                         }
                         _ => {}
                     }
@@ -134,17 +138,29 @@ impl Mapper {
                 for b in ev["message"]["content"].as_array().into_iter().flatten() {
                     if b["type"] == "tool_result" {
                         let t = result_text(&b["content"]);
-                        acts.push(Act::Log(Kind::Echo, cap(&t)));
-                        acts.push(Act::Show(Show::Result {
-                            text: t,
-                            error: b["is_error"] == true,
-                        }));
+                        let error = b["is_error"] == true;
+                        let id = b["tool_use_id"].as_str().unwrap_or_default();
+                        let call = match self.calls.iter().position(|c| c.0 == id) {
+                            Some(k) => self.calls.remove(k).1,
+                            None => "?".into(),
+                        };
+                        let result = if error { format!("error: {t}") } else { t.clone() };
+                        acts.push(Act::Log(Kind::Tool, format!("{call}\n{}", cap(&result))));
+                        acts.push(Act::Show(Show::Result { text: t, error }));
                     }
                 }
             }
             _ => {}
         }
         acts
+    }
+
+    /// The `tool` messages of the calls still waiting for a result when the turn ends.
+    pub fn unfinished(&mut self) -> Vec<String> {
+        self.calls
+            .drain(..)
+            .map(|(_, call)| format!("{call}\n(no result)"))
+            .collect()
     }
 }
 
@@ -170,7 +186,7 @@ mod tests {
         ]}});
         assert_eq!(
             Mapper::default().map(&e)[0],
-            Act::Log(Kind::Echo, "a\n[image]".into())
+            Act::Log(Kind::Tool, "?\na\n[image]".into())
         );
     }
 
@@ -197,10 +213,12 @@ mod tests {
         let logs = logs(&acts);
         let kinds: Vec<_> = logs.iter().map(|l| l.0).collect();
         use Kind::*;
-        assert_eq!(kinds, [Tool, Echo, Tool, Echo, Tool, Echo, Talk]);
-        assert_eq!(logs[0].1, r#"mcp__memory__zoom {"id":10,"n":1}"#);
-        assert!(logs[1].1.starts_with("10+0|note: Fixed the retry wrapper"));
-        assert_eq!(logs[3].1, "2026-10-02 15:59");
+        assert_eq!(kinds, [Tool, Tool, Tool, Ai]);
+        assert!(logs[0].1.starts_with(concat!(
+            r#"mcp__memory__zoom {"id":10,"n":1}"#,
+            "\n10+0|note: Fixed the retry wrapper"
+        )));
+        assert!(logs[1].1.ends_with("}\n2026-10-02 15:59"));
         let shown: String = acts
             .iter()
             .filter_map(|a| match a {
@@ -208,7 +226,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(shown, logs[6].1);
+        assert_eq!(shown, logs[3].1);
         assert!(!acts.iter().any(|a| matches!(a, Act::Show(Show::Error(_)))));
         assert!(
             !acts.contains(&Act::Taken),
@@ -217,9 +235,30 @@ mod tests {
     }
 
     #[test]
+    fn a_call_is_logged_with_its_own_result() {
+        let mut m = Mapper::default();
+        let call = |id: &str, cmd: &str| {
+            serde_json::json!({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": id, "name": "Bash", "input": {"command": cmd}}
+            ]}})
+        };
+        m.map(&call("a", "ls"));
+        m.map(&call("b", "pwd"));
+        let done = serde_json::json!({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "b", "content": "nope", "is_error": true}
+        ]}});
+        assert_eq!(
+            logs(&m.map(&done)),
+            [(Kind::Tool, "Bash {\"command\":\"pwd\"}\nerror: nope")]
+        );
+        assert_eq!(m.unfinished(), ["Bash {\"command\":\"ls\"}\n(no result)"]);
+        assert!(m.unfinished().is_empty());
+    }
+
+    #[test]
     fn a_recorded_thought_is_shown_as_its_size_and_never_logged() {
         let acts = replay(include_str!("../tests/fixtures/turn-thinking.jsonl"));
-        assert_eq!(logs(&acts), [(Kind::Talk, "142")]);
+        assert_eq!(logs(&acts), [(Kind::Ai, "142")]);
         let thoughts = acts
             .iter()
             .filter(|a| matches!(a, Act::Show(Show::Thought(_))))

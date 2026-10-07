@@ -1,9 +1,11 @@
-use anyhow::{Result, bail};
+use anyhow::Result;
 
 use crate::{store::Snapshot, tree::Coord};
 
 pub const VIEW: u64 = 128_000;
 pub const PLACEHOLDER: &str = "(not summarized yet: zoom it)";
+/// What zoom shows for a line of tool calls only, which the view leaves out.
+pub const HIDDEN: &str = "(tool calls: zoom it)";
 
 /// The tree in memory and the view folded over it: parts tiling `[0, t)`, oldest first.
 #[derive(Clone, Debug)]
@@ -157,42 +159,19 @@ impl Mem {
         }
     }
 
-    /// The first message whose view part is not built yet, else `t`.
-    pub fn first(&self) -> u64 {
-        self.view
-            .iter()
-            .find(|&&c| !self.built(c))
-            .map_or(self.t, |c| c.id())
-    }
-
     pub fn all_built(&self) -> bool {
         self.view.iter().all(|&c| self.built(c))
     }
 
-    /// The bare texts of the view parts that end by `limit`: what a compactor call sees.
-    pub fn context(&self, limit: u64) -> Result<Vec<String>> {
-        let mut lines = Vec::new();
-        for &c in self.view.iter().take_while(|c| c.end() <= limit) {
-            let Some(text) = self.text(c) else {
-                bail!("Unbuilt line {c} before {limit}: rule 3 broken.");
-            };
-            lines.push(text.to_string());
-        }
-        Ok(lines)
-    }
-
-    /// Nodes to build now, oldest level first: ready, unbuilt, not `busy`, and every view
-    /// line before their end already a summary. At most `max`.
+    /// Nodes to build now, oldest level first: ready, unbuilt, not `busy`. At most `max`.
     pub fn due(&self, busy: impl Fn(Coord) -> bool, max: usize) -> Vec<Coord> {
-        let head = self.first();
         let mut out = Vec::new();
         let mut l = 0;
         while 1u64 << l <= self.t {
             let mut i = self.low.get(l as usize).copied().unwrap_or(0);
             loop {
                 let c = Coord::new(l, i);
-                let end = if l == 0 { i } else { c.end() };
-                if c.end() > self.t || end > head {
+                if c.end() > self.t {
                     break;
                 }
                 if !self.built(c) && !busy(c) && self.ready(c) {
@@ -221,10 +200,11 @@ impl Mem {
         Ok(())
     }
 
-    /// One `id+n|text` line per part.
+    /// One `id+n|text` line per part, but none for tool calls.
     pub fn lines(&self) -> Vec<String> {
         self.view
             .iter()
+            .filter(|&&c| self.text(c) != Some(""))
             .map(|&c| format!("{c}|{}", self.text(c).unwrap_or(PLACEHOLDER)))
             .collect()
     }

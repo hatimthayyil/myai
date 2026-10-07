@@ -13,7 +13,7 @@ use std::{
 
 use ai_memory::{
     Backend, Block, Cli, Compactor, Conversation, Coord, Kind, Mem, Message, NODE, Options,
-    PLACEHOLDER, Place, Runtime, Store, VIEW, Who, zoom,
+    HIDDEN, PLACEHOLDER, Place, Runtime, Store, VIEW, Who, zoom,
 };
 use anyhow::{Result, bail};
 use clap::Parser;
@@ -169,14 +169,14 @@ impl Conversation for FakeConv {
         let f = &self.fake;
         f.says.fetch_add(1, Ordering::SeqCst);
         if self.attempt == 0 {
-            let (step, chat) = message.split_last().unwrap();
-            assert!(!step.cache && chat.iter().all(|b| b.cache));
-            let chat: String = chat.iter().map(|b| b.text.as_str()).collect();
-            assert!(chat.starts_with("<chat>\n") && chat.ends_with("</chat>"));
+            let [step] = message else {
+                panic!("a call is the step alone, without context: {message:?}");
+            };
             let ids = Regex::new(r"(?m)^\d+\+\d+\|").unwrap();
             assert!(
-                !ids.is_match(&chat) && !chat.contains(PLACEHOLDER),
-                "{chat}"
+                !step.cache && !ids.is_match(&step.text) && !step.text.contains(PLACEHOLDER),
+                "{}",
+                step.text
             );
             self.step = step.text.clone();
             f.log.lock().unwrap().push(tag(&self.step));
@@ -292,26 +292,24 @@ fn the_view_folds_incrementally() {
 }
 
 #[test]
-fn rule_three_orders_the_work() {
+fn due_is_every_ready_node_oldest_level_first() {
     let mut m = Mem::new(VIEW);
     for _ in 0..6 {
         m.add_message();
     }
-    assert_eq!(m.first(), 0);
-    assert_eq!(m.due(|_| false, 10), [Coord::leaf(0)]);
+    let leaves = |is: &[u64]| is.iter().map(|&i| Coord::leaf(i)).collect::<Vec<_>>();
+    assert_eq!(m.due(|_| false, 10), leaves(&[0, 1, 2, 3, 4, 5]));
     m.add_node(Coord::leaf(0), "a".into());
     m.add_node(Coord::leaf(1), "b".into());
-    assert_eq!(m.first(), 2);
-    assert_eq!(m.due(|_| false, 10), [Coord::leaf(2), Coord::new(1, 0)]);
+    let mut want = leaves(&[2, 3, 4, 5]);
+    want.push(Coord::new(1, 0));
+    assert_eq!(m.due(|_| false, 10), want);
     assert_eq!(m.due(|c| c.l == 0, 10), [Coord::new(1, 0)]);
     assert_eq!(m.due(|_| false, 1), [Coord::leaf(2)]);
     m.add_node(Coord::leaf(3), "d".into());
-    assert_eq!(m.due(|_| false, 10), [Coord::leaf(2), Coord::new(1, 0)]);
-    assert_eq!(m.context(2).unwrap(), ["a", "b"]);
-    assert!(
-        m.context(4).is_err(),
-        "an unbuilt line before the limit is loud"
-    );
+    let mut want = leaves(&[2, 4, 5]);
+    want.push(Coord::new(1, 0));
+    assert_eq!(m.due(|_| false, 10), want);
     assert_eq!(
         m.lines()[2..4],
         [format!("2+1|{PLACEHOLDER}"), "3+1|d".into()]
@@ -328,8 +326,8 @@ fn short_messages_are_their_own_nodes() {
             "t",
             &[
                 msg(Kind::User, "hi\nthere"),
-                msg(Kind::Talk, "hello"),
-                msg(Kind::Echo, long(2)),
+                msg(Kind::Ai, "hello"),
+                msg(Kind::Tool, "Bash {\"command\":\"ls\"}\nsrc"),
             ],
         )
         .unwrap();
@@ -339,9 +337,11 @@ fn short_messages_are_their_own_nodes() {
         names,
         [
             "0+1=user: hi there",
-            "1+1=talk: hello",
-            "0+2=user: hi there talk: hello"
-        ]
+            "1+1=ai: hello",
+            "0+2=user: hi there ai: hello",
+            "2+1="
+        ],
+        "a tool call's line is empty"
     );
     let free = snap.node(Coord::new(1, 0)).unwrap().unwrap();
     assert_eq!(
@@ -353,29 +353,33 @@ fn short_messages_are_their_own_nodes() {
         }
     );
     assert_eq!(free.origin, s.origin());
-    assert!(snap.node(Coord::leaf(2)).unwrap().is_none());
     let exact = "x".repeat(NODE - "note: ".len());
+    let line = format!("note: {exact}");
     let (_, built, snap) = s.append("t", &[msg(Kind::Note, exact.clone())]).unwrap();
+    let names: Vec<_> = built.iter().map(|(c, t)| format!("{c}={t}")).collect();
     assert_eq!(
-        built.len(),
-        1,
+        names,
+        [format!("3+1={line}"), format!("2+2={line}")],
+        "a merge with tool calls only is its other side"
+    );
+    assert!(
+        snap.node(Coord::new(2, 0)).unwrap().is_none(),
         "the merge of a long line and a full one is not free"
     );
     assert_eq!(
-        snap.node(Coord::leaf(3)).unwrap().unwrap().text,
-        format!("note: {exact}")
+        zoom(&snap, 2, 2).unwrap().unwrap(),
+        format!("2+1|{HIDDEN}\n3+1|{line}")
     );
-    let (built, snap) = s
-        .put_node(Coord::leaf(2), &fake_who(), "echo: long")
-        .unwrap();
+    let (built, _) = s.put_node(Coord::new(2, 0), &fake_who(), "merged").unwrap();
     assert_eq!(built.len(), 1);
-    assert!(snap.node(Coord::new(1, 1)).unwrap().is_none());
-    let (again, _) = s.put_node(Coord::leaf(2), &fake_who(), "other").unwrap();
+    let (again, _) = s.put_node(Coord::new(2, 0), &fake_who(), "other").unwrap();
     assert!(again.is_empty(), "built nodes never change");
     assert!(s.put_node(Coord::new(3, 0), &fake_who(), "x").is_err());
     let m = Mem::load(&s.snapshot().unwrap(), VIEW).unwrap();
     assert_eq!(m.t(), 4);
     assert!(m.all_built());
+    let ids: Vec<_> = m.lines().iter().map(|l| l.split('|').next().unwrap().to_string()).collect();
+    assert_eq!(ids, ["0+1", "1+1", "3+1"], "the view leaves out tool calls");
 }
 
 #[test]
@@ -386,11 +390,11 @@ fn zoom_opens_one_level() {
         .map(|i| msg(Kind::User, format!("word {i}\nmore")))
         .collect();
     s.append("t", &items).unwrap();
-    s.append("t", &[msg(Kind::Echo, long(5))]).unwrap();
+    s.append("t", &[msg(Kind::Ai, long(5))]).unwrap();
     let snap = s.snapshot().unwrap();
     let z = |id, n| zoom(&snap, id, n).unwrap();
     assert_eq!(z(1, 1).unwrap(), "1+0|user: word 1\nmore");
-    assert_eq!(z(5, 1).unwrap(), format!("5+0|echo: {}", long(5)));
+    assert_eq!(z(5, 1).unwrap(), format!("5+0|ai: {}", long(5)));
     assert_eq!(
         z(0, 4).unwrap(),
         "0+2|user: word 0 more user: word 1 more\n2+2|user: word 2 more user: word 3 more"
@@ -407,23 +411,23 @@ fn zoom_opens_one_level() {
 }
 
 #[test]
-fn the_compactor_builds_in_order_and_settles() {
+fn the_compactor_builds_everything_and_settles() {
     let (_tmp, d) = store();
     let s = Store::open(&d).unwrap();
     let items: Vec<_> = (0..12).map(|i| msg(Kind::User, long(i))).collect();
     s.append("t", &items).unwrap();
     let fake = Arc::new(Fake::summaries());
     let mut c = compactor(&s, &fake, opts(VIEW, 3));
-    assert_eq!(c.mem().first(), 0);
     c.settle().unwrap();
     assert!(c.mem().all_built());
     c.run(|_| Ok(())).unwrap();
     let log = fake.log.lock().unwrap().clone();
-    let leaves: Vec<_> = log.iter().filter(|t| t.starts_with('m')).cloned().collect();
+    let mut leaves: Vec<_> = log.iter().filter(|t| t.starts_with('m')).cloned().collect();
+    leaves.sort_by_key(|t| t[1..].parse::<u64>().unwrap());
     assert_eq!(
         leaves,
         (0..12).map(|i| format!("m{i}")).collect::<Vec<_>>(),
-        "messages in order"
+        "every message once"
     );
     assert_eq!(log.len(), 12 + 6 + 3 + 1);
     let peak = fake.peak.load(Ordering::SeqCst);
@@ -461,7 +465,7 @@ fn the_compactor_folds_the_view_under_its_budget() {
     let fake = Arc::new(Fake::summaries());
     let mut c = compactor(&s, &fake, opts(3000, 8));
     for i in 0..100 {
-        c.log(&[msg(Kind::Echo, long(i))]).unwrap();
+        c.log(&[msg(Kind::Ai, long(i))]).unwrap();
         c.settle().unwrap();
         check_tiles(c.mem());
         assert!(c.mem().size() <= 3000 || !mergeable(c.mem()));
@@ -592,16 +596,16 @@ fn a_life_through_the_cli() {
     );
     let r = run(d, &["note", "a short one"]);
     assert_eq!(r.stdout, "Saved as 40+1.\n");
-    let r = run(d, &["note", &format!("big {}", "b".repeat(500))]);
+    let r = run(d, &["note", &format!("big {}", "b".repeat(270))]);
     assert_eq!(r.stdout, "Saved as 41+1.\n");
 
     let wake = run(d, &["wake"]).stdout;
     assert!(
-        wake.starts_with("<chat>\n0+1|note: message 0 nnn"),
+        wake.starts_with("0+1|note: message 0 nnn"),
         "{wake}"
     );
     assert!(wake.contains("\n40+1|note: a short one\n"));
-    assert!(wake.ends_with("</chat>\nYou are awake.\n"));
+    assert!(wake.ends_with("\nYou are awake.\n"));
 
     let rt = runtime(Arc::new(Model(Arc::new(Fake::summaries()))));
     let r = run_rt(d, &rt, &["nap"]);
@@ -625,6 +629,18 @@ fn a_life_through_the_cli() {
         }
     }
     assert_eq!(run(d, &["nap"]).stdout, "Nothing to build.\n");
+
+    assert_eq!(run(d, &["config", "WAKE_LINES=8"]).code, 0);
+    let wake = run(d, &["wake"]).stdout;
+    let ids: Vec<(u64, u64)> = wake
+        .lines()
+        .filter_map(|l| Coord::parse(l.split_once('|')?.0))
+        .collect();
+    assert_eq!(ids.len(), 8, "{wake}");
+    assert!(ids[0].0 == 0 && ids[0].1 > 1, "the oldest are summarized: {wake}");
+    assert!(ids.windows(2).all(|w| w[0].0 + w[0].1 == w[1].0), "{wake}");
+    assert_eq!(ids[7].0 + ids[7].1, 42, "{wake}");
+    assert_eq!(run(d, &["config", "WAKE_LINES="]).code, 0);
 
     assert_eq!(run(d, &["config", "PART_CHARS=600"]).code, 0);
     let first = run(d, &["wake"]).stdout;
@@ -758,7 +774,7 @@ fn a_life_through_the_cli() {
         "Newest 5 of 40. Older: ai memory grep 'message' -m 5 --before 35+1"
     );
     let g = run(d, &["grep", "big"]).stdout;
-    assert!(g.contains("note: big bbb") && g.contains('…'));
+    assert!(g.contains("note: big bbb"));
     assert_eq!(run(d, &["grep", "^"]).code, 0);
 
     let bad = tmp.path().join("bad.txt");
@@ -783,7 +799,7 @@ fn init_prints_the_block_and_is_idempotent() {
     assert!(r.stdout.starts_with("Found "));
     assert!(
         r.stdout
-            .contains("ai memory note \"<1 line, max 506 bytes>\"")
+            .contains("ai memory note \"<1 line, max 280 bytes>\"")
     );
     assert!(r.stdout.contains("ai memory zoom <id+n>"));
     assert!(!r.stdout.contains("nap"));

@@ -300,15 +300,17 @@ pub struct ClaudeCode {
 }
 
 impl ClaudeCode {
-    /// The compactor's model: Sonnet at medium effort, through the `claude` on `PATH`.
+    /// The compactor: `$AI_MEMORY_MODEL` (default Sonnet) at medium effort, through the
+    /// `claude` on `PATH`.
     pub fn compactor() -> Result<ClaudeCode> {
-        ClaudeCode::compactor_at(find()?)
+        let model = std::env::var("AI_MEMORY_MODEL").unwrap_or_else(|_| "sonnet".into());
+        ClaudeCode::compactor_at(find()?, &model)
     }
 
-    pub fn compactor_at(program: OsString) -> Result<ClaudeCode> {
+    pub fn compactor_at(program: OsString, model: &str) -> Result<ClaudeCode> {
         Ok(ClaudeCode {
             program,
-            model: "sonnet".into(),
+            model: model.into(),
             effort: "medium".into(),
             prompts: Prompts::new()?,
             live: Live::default(),
@@ -430,7 +432,7 @@ mod tests {
 
     #[test]
     fn the_compactor_runs_isolated_without_tools() {
-        let c = ClaudeCode::compactor_at("claude".into()).unwrap();
+        let c = ClaudeCode::compactor_at("claude".into(), "sonnet").unwrap();
         let file = c.prompts.file("You write the memory.").unwrap();
         assert_eq!(fs::read_to_string(&file).unwrap(), "You write the memory.");
         assert_eq!(c.prompts.file("You write the memory.").unwrap(), file);

@@ -38,7 +38,7 @@ mod tests {
             assert!(!p.contains("OptChat") && p.contains("MyAI"));
         }
         assert!(MASTER.starts_with("You are MyAI, an AI agent that works for one user"));
-        assert!(VIEW_DOC.contains("note\n(notes recorded by other agent sessions)"));
+        assert!(VIEW_DOC.contains("note (notes recorded by other agent sessions)"));
         assert!(
             VIEW_DOC
                 .trim_end()
