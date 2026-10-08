@@ -5,3 +5,4 @@
 - `serde_json`: stream-json with Claude Code. `tempfile`: the backend's system-prompt files.
 - `getrandom`: the store's origin.
 - `libc`: Linux child process groups and parent-death signals.
+- `tracing`, `tracing-subscriber` (`fmt`, `env-filter`, `std`; no `ansi`, no proc-macro attributes): the nap log, see `src/log.rs.md`.

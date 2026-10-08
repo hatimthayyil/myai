@@ -10,9 +10,11 @@ use std::{
 };
 
 use anyhow::{Result, bail};
+use tracing::{Span, debug, dispatcher, info, warn};
 
 use crate::{
     backend::{Backend, Block},
+    log,
     record::{Message, Who, flat},
     store::{AtPath, Store},
     tree::{Coord, NODE},
@@ -97,6 +99,9 @@ pub fn summarize(backend: &dyn Backend, job: &Job) -> Result<(Who, String)> {
     let mut tries: Vec<String> = Vec::new();
     loop {
         let line = flat(reply.trim());
+        if line.len() > NODE {
+            warn!(node = %job.node, bytes = line.len(), attempt = tries.len() + 1, "over limit");
+        }
         if line.is_empty() {
             bail!("empty reply");
         }
@@ -136,7 +141,7 @@ impl Default for Options {
     }
 }
 
-type Done = (Coord, Result<(Who, String)>);
+type Done = (Coord, Duration, Result<(Who, String)>);
 type Notify = Arc<dyn Fn() + Send + Sync>;
 
 /// The pump: builds every node whose sources exist and whose context is all summaries,
@@ -249,9 +254,13 @@ impl<'s> Compactor<'s> {
             self.busy.insert(c);
             let (backend, tx) = (self.backend.clone(), self.tx.clone());
             let notify = self.notify.clone();
+            let (span, dispatch) = (Span::current(), dispatcher::get_default(Clone::clone));
             thread::spawn(move || {
+                let _d = dispatcher::set_default(&dispatch);
+                let _s = span.enter();
+                let start = Instant::now();
                 let r = summarize(&*backend, &job);
-                let _ = tx.send((job.node, r));
+                let _ = tx.send((job.node, start.elapsed(), r));
                 if let Some(f) = notify {
                     f();
                 }
@@ -260,9 +269,10 @@ impl<'s> Compactor<'s> {
         Ok(())
     }
 
-    fn finish(&mut self, (c, r): Done) -> Result<()> {
+    fn finish(&mut self, (c, took, r): Done) -> Result<()> {
         match r {
             Ok((who, text)) => {
+                info!(node = %c, bytes = text.len(), secs = log::secs(took), "built");
                 let (built, snap) = self.store.put_node(c, &who, &text)?;
                 for (k, t) in built {
                     self.mem.set(k, t);
@@ -274,8 +284,12 @@ impl<'s> Compactor<'s> {
                 self.built += 1;
             }
             Err(e) => {
+                let error = format!("{e:#}");
                 if self.failed.insert(c) {
-                    self.reports.push(format!("{c}: {e:#}"));
+                    warn!(node = %c, error, secs = log::secs(took), "failed");
+                    self.reports.push(format!("{c}: {error}"));
+                } else {
+                    debug!(node = %c, error, secs = log::secs(took), "failed again");
                 }
                 self.waits.push((Instant::now() + self.opts.retry, c));
             }

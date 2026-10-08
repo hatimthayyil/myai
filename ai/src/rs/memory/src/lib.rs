@@ -5,6 +5,7 @@ mod compact;
 mod config;
 mod cover;
 mod grep;
+mod log;
 pub mod prov;
 mod record;
 mod store;

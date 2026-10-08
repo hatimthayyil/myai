@@ -893,6 +893,57 @@ fn a_missing_dir_is_reported_not_created() {
 }
 
 #[test]
+fn a_nap_logs_timestamped_events_to_nap_log() {
+    let (_tmp, d) = store();
+    let s = Store::open(&d).unwrap();
+    s.append("t", &[msg(Kind::User, long(0)), msg(Kind::User, long(1))])
+        .unwrap();
+    let r = run(&d, &["nap"]);
+    assert_eq!(r.stdout, "Built 3 summaries.\n", "{}", r.stderr);
+    let line = |level: &str, event: &str| {
+        Regex::new(&format!(
+            r"(?m)^\d{{4}}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{{6}}Z  {level} nap\{{pid={} model=\S+ dir=\S+\}}: ai_memory::\w+: {event}$",
+            std::process::id()
+        ))
+        .unwrap()
+    };
+    let log = fs::read_to_string(d.join("nap.log")).unwrap();
+    for event in [
+        "start",
+        r"built node=0\+1 bytes=300 secs=[\d.]+",
+        r"built node=1\+1 bytes=300 secs=[\d.]+",
+        r"built node=0\+2 bytes=300 secs=[\d.]+",
+        r"end built=3 secs=[\d.]+",
+    ] {
+        assert!(line("INFO", event).is_match(&log), "{event}:\n{log}");
+    }
+    assert_eq!(log.lines().count(), 5, "{log}");
+
+    s.append("t", &[msg(Kind::User, long(2))]).unwrap();
+    let failed = AtomicUsize::new(0);
+    let flaky = Fake::new(move |_, attempt| {
+        if failed.fetch_add(1, Ordering::SeqCst) == 0 {
+            bail!("overloaded");
+        }
+        Ok("y".repeat(if attempt == 1 { 600 } else { 300 }))
+    });
+    let r = run_rt(&d, &runtime(Arc::new(Model(Arc::new(flaky)))), &["nap"]);
+    assert!(r.stdout.ends_with("Built 1 summary.\n"), "{}", r.stdout);
+    let log = fs::read_to_string(d.join("nap.log")).unwrap();
+    let warns = [
+        r#"failed node=2\+1 error="overloaded" secs=[\d.]+"#,
+        r"over limit node=2\+1 bytes=600 attempt=1",
+    ];
+    for event in warns {
+        assert!(line("WARN", event).is_match(&log), "{event}:\n{log}");
+    }
+    assert!(
+        line("INFO", r"end built=1 secs=[\d.]+").is_match(&log),
+        "{log}"
+    );
+}
+
+#[test]
 fn a_note_whose_nap_finds_the_lock_taken_still_gets_built() {
     let (_tmp, d) = store();
     let s = Store::open(&d).unwrap();

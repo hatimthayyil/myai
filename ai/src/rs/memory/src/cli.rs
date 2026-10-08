@@ -5,18 +5,20 @@ use std::{
     path::{Path, PathBuf},
     process::{self, ExitCode, Stdio},
     sync::Arc,
+    time::Instant,
 };
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+use tracing::{error, info, info_span};
 
 use crate::{
     backend::Backend,
-    claude::ClaudeCode,
+    claude::{self, ClaudeCode},
     compact::{Compactor, Options},
     config::Knob,
     grep::{Grep, grep},
-    prov,
+    log, prov,
     record::{Kind, Message, midnight},
     cover::cover,
     store::{AtPath, ME, Snapshot, Store, pretty},
@@ -150,21 +152,15 @@ impl Default for Runtime {
     }
 }
 
-/// Starts `ai memory nap` on `dir`, detached, its output appended to `nap.log` there.
+/// Starts `ai memory nap` on `dir`, detached; it logs to `nap.log` there, its stderr too.
 fn spawn_nap(dir: &Path) -> Result<()> {
     let exe = std::env::current_exe().context("Cannot find this program to start a nap.")?;
-    let log = dir.join("nap.log");
-    let file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log)
-        .at(&log)?;
     process::Command::new(exe)
         .args(["memory", "nap"])
         .env("AI_MEMORY_DIR", dir)
         .stdin(Stdio::null())
-        .stdout(file.try_clone().at(&log)?)
-        .stderr(file)
+        .stdout(Stdio::null())
+        .stderr(log::open(dir)?)
         .process_group(0)
         .spawn()
         .context("Cannot start a nap.")?;
@@ -388,11 +384,34 @@ fn pending(s: &Store) -> Result<bool> {
 }
 
 fn nap(s: &Store, out: &mut dyn Write, rt: &Runtime) -> Result<ExitCode> {
+    let _log = log::init(s.dir())?;
+    let _nap = info_span!(
+        "nap",
+        pid = process::id(),
+        model = %claude::model(),
+        dir = ?pretty(s.dir())
+    )
+    .entered();
+    let start = Instant::now();
+    info!("start");
+    match rounds(s, out, rt) {
+        Ok(built) => info!(built, secs = log::secs(start.elapsed()), "end"),
+        Err(e) => {
+            error!(error = format!("{e:#}"), "failed");
+            return Err(e);
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Compactor rounds until nothing is due or another compactor holds the lock; the nodes built.
+fn rounds(s: &Store, out: &mut dyn Write, rt: &Runtime) -> Result<u64> {
     let mut built = 0;
     while pending(s)? {
         let Some(mut c) = Compactor::new(s, (rt.backend)()?, rt.opts)? else {
             writeln!(out, "{BUSY}")?;
-            return Ok(ExitCode::SUCCESS);
+            info!("busy: another compactor holds the lock; exiting");
+            return Ok(built);
         };
         let retry = rt.opts.retry.as_secs_f64();
         c.run(|c| {
@@ -409,7 +428,7 @@ fn nap(s: &Store, out: &mut dyn Write, rt: &Runtime) -> Result<ExitCode> {
         0 => writeln!(out, "Nothing to build.")?,
         n => writeln!(out, "Built {}.", plural(n, "summary"))?,
     }
-    Ok(ExitCode::SUCCESS)
+    Ok(built)
 }
 
 fn config(s: &Store, out: &mut dyn Write, sets: &[String]) -> Result<ExitCode> {
