@@ -62,7 +62,8 @@ pub fn cut_blocks(s: &str, marks: &[usize]) -> Vec<String> {
 }
 
 fn step_text(step: &Step) -> String {
-    let scale = format!("For scale, this line is exactly {NODE} bytes:\n{SCALE}\n\n");
+    let scale =
+        format!("For scale only, this meaningless filler is exactly {NODE} bytes:\n{SCALE}\n\n");
     match step {
         Step::Compress(m) => {
             format!("{scale}Compress this message into one line, in at most {NODE} bytes:\n{m}")
@@ -80,16 +81,11 @@ pub fn message(job: &Job) -> Vec<Block> {
     vec![Block::new(step_text(&job.step), false)]
 }
 
-/// `line` cut to its first [`NODE`] bytes, never inside a character.
-pub fn cut(line: &str) -> &str {
-    &line[..line.floor_char_boundary(NODE)]
-}
-
 pub fn retry_text(line: &str) -> String {
     format!(
-        "That line is {} bytes; the limit is {NODE}. It must end where it is cut here:\n{}| ← LIMIT",
+        "That line is {} bytes, {} over the limit of {NODE}. Rewrite it whole, as one complete line of at most {NODE} bytes: shorten the minor items, never cut it off.",
         line.len(),
-        cut(line)
+        line.len() - NODE
     )
 }
 
@@ -104,13 +100,12 @@ pub fn summarize(backend: &dyn Backend, job: &Job) -> Result<(Who, String)> {
         if line.is_empty() {
             bail!("empty reply");
         }
-        let done = line.len() <= NODE || tries.len() + 1 >= TRIES;
-        let retry = retry_text(&line);
-        tries.push(line);
-        if done {
+        if line.len() <= NODE || tries.len() + 1 >= TRIES {
+            tries.push(line);
             break;
         }
-        reply = conv.say(&[Block::new(retry, false)])?;
+        reply = conv.say(&[Block::new(retry_text(&line), false)])?;
+        tries.push(line);
     }
     let who = Who {
         agent: backend.agent().into(),
@@ -354,7 +349,7 @@ mod tests {
     #[test]
     fn prompts_are_the_spec_s() {
         assert_eq!(SCALE.len(), NODE);
-        assert!(!SCALE.contains('\n'));
+        assert!(SCALE.starts_with("Lorem ipsum") && SCALE.is_ascii() && !SCALE.contains('\n'));
         assert!(COMPACT.starts_with("You write the memory of MyAI: AI agents"));
         assert!(!COMPACT.contains("OptChat"));
         assert!(
@@ -382,11 +377,13 @@ mod tests {
         assert_eq!(m.len(), 1, "the step alone: no context");
         assert!(!m[0].cache);
         assert!(m[0].text.starts_with(&format!(
-            "For scale, this line is exactly 512 bytes:\n{SCALE}\n\n"
+            "For scale only, this meaningless filler is exactly 512 bytes:\n{SCALE}\n\n"
         )));
-        assert!(m[0].text.ends_with(
-            "Merge these two lines into one, in at most 512 bytes:\nuser: hi\nai: a b"
-        ));
+        assert!(
+            m[0].text.ends_with(
+                "Merge these two lines into one, in at most 512 bytes:\nuser: hi\nai: a b"
+            )
+        );
         let c = step_text(&Step::Compress("tool: x\ny".into()));
         assert!(
             c.ends_with("Compress this message into one line, in at most 512 bytes:\ntool: x\ny")
@@ -394,14 +391,9 @@ mod tests {
     }
 
     #[test]
-    fn retries_show_the_cut() {
-        let line = format!("{}ééé", "x".repeat(NODE - 1));
-        assert_eq!(cut(&line).len(), NODE - 1);
-        let r = retry_text(&line);
-        assert!(r.starts_with(&format!(
-            "That line is {} bytes; the limit is 512.",
-            line.len()
-        )));
-        assert!(r.ends_with(&format!("{}| ← LIMIT", "x".repeat(NODE - 1))));
+    fn retries_ask_for_a_shorter_rewrite() {
+        let r = retry_text(&format!("{}ééé", "x".repeat(NODE - 1)));
+        assert!(r.starts_with("That line is 517 bytes, 5 over the limit of 512. Rewrite it whole"));
+        assert!(r.ends_with("never cut it off."));
     }
 }

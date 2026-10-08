@@ -182,7 +182,7 @@ impl Conversation for FakeConv {
             f.log.lock().unwrap().push(tag(&self.step));
         } else {
             assert_eq!(message.len(), 1);
-            assert!(message[0].text.ends_with("| ← LIMIT"));
+            assert!(message[0].text.ends_with("never cut it off."));
         }
         self.attempt += 1;
         let now = f.running.fetch_add(1, Ordering::SeqCst) + 1;
