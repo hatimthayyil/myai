@@ -6,3 +6,4 @@
 - `getrandom`: the store's origin.
 - `libc`: Linux child process groups and parent-death signals.
 - `tracing`, `tracing-subscriber` (`fmt`, `env-filter`, `std`; no `ansi`, no proc-macro attributes): the nap log, see `src/log.rs.md`.
+- `backon` (`default-features = false`, `std`): retry backoff for the compactor, used as an iterator of delays; no Tokio or timers pulled in. Its async `Retryable` (feature `tokio-sleep`) is the path if the compactor moves to Tokio. `backoff` is unmaintained (RUSTSEC-2025-0012, which points to backon). See ai/research/*rust-retry-crates.md.

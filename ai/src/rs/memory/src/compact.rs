@@ -1,5 +1,6 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
+    fmt,
     fs::{File, TryLockError},
     sync::{
         Arc,
@@ -10,6 +11,7 @@ use std::{
 };
 
 use anyhow::{Result, bail};
+use backon::{BackoffBuilder, ExponentialBackoff, ExponentialBuilder};
 use tracing::{Span, debug, dispatcher, info, warn};
 
 use crate::{
@@ -26,6 +28,8 @@ pub const SCALE: &str = include_str!("../prompts/scale.txt");
 pub const JOBS: usize = 8;
 pub const TRIES: usize = 5;
 pub const RETRY: Duration = Duration::from_secs(10);
+pub const RETRY_MAX: Duration = Duration::from_secs(300);
+pub const RETRIES: usize = 8;
 pub const MARKS: [usize; 3] = [50_000, 80_000, 100_000];
 const LOCK: &str = "compact.lock";
 
@@ -127,7 +131,10 @@ pub fn summarize(backend: &dyn Backend, job: &Job) -> Result<(Who, String)> {
 #[derive(Clone, Copy, Debug)]
 pub struct Options {
     pub jobs: usize,
+    /// The first wait after a node fails; each next one doubles, up to [`RETRY_MAX`], plus jitter.
     pub retry: Duration,
+    /// Retries of a node failing in a row before the compactor gives up ([`GaveUp`]).
+    pub retries: usize,
     pub budget: u64,
 }
 
@@ -136,10 +143,42 @@ impl Default for Options {
         Options {
             jobs: JOBS,
             retry: RETRY,
+            retries: RETRIES,
             budget: VIEW,
         }
     }
 }
+
+impl Options {
+    fn backoff(&self) -> ExponentialBackoff {
+        ExponentialBuilder::new()
+            .with_min_delay(self.retry)
+            .with_max_delay(RETRY_MAX)
+            .with_max_times(self.retries)
+            .with_jitter()
+            .build()
+    }
+}
+
+/// A node failed `tries` times in a row: the compactor stops; the node stays unbuilt.
+#[derive(Debug)]
+pub struct GaveUp {
+    pub node: Coord,
+    pub tries: usize,
+    pub error: String,
+}
+
+impl fmt::Display for GaveUp {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let GaveUp { node, tries, error } = self;
+        write!(
+            f,
+            "Gave up on {node} after {tries} failures in a row: {error}"
+        )
+    }
+}
+
+impl std::error::Error for GaveUp {}
 
 type Done = (Coord, Duration, Result<(Who, String)>);
 type Notify = Arc<dyn Fn() + Send + Sync>;
@@ -152,7 +191,7 @@ pub struct Compactor<'s> {
     opts: Options,
     mem: Mem,
     busy: HashSet<Coord>,
-    failed: HashSet<Coord>,
+    failed: HashMap<Coord, ExponentialBackoff>,
     waits: Vec<(Instant, Coord)>,
     reports: Vec<String>,
     built: u64,
@@ -180,7 +219,7 @@ impl<'s> Compactor<'s> {
             opts,
             mem,
             busy: HashSet::new(),
-            failed: HashSet::new(),
+            failed: HashMap::new(),
             waits: Vec::new(),
             reports: Vec::new(),
             built: 0,
@@ -285,13 +324,25 @@ impl<'s> Compactor<'s> {
             }
             Err(e) => {
                 let error = format!("{e:#}");
-                if self.failed.insert(c) {
-                    warn!(node = %c, error, secs = log::secs(took), "failed");
+                let first = !self.failed.contains_key(&c);
+                let backoff = self.failed.entry(c).or_insert_with(|| self.opts.backoff());
+                let Some(wait) = backoff.next() else {
+                    let tries = self.opts.retries + 1;
+                    return Err(GaveUp {
+                        node: c,
+                        tries,
+                        error,
+                    }
+                    .into());
+                };
+                let (secs, wait_secs) = (log::secs(took), log::secs(wait));
+                if first {
+                    warn!(node = %c, error, secs, wait = wait_secs, "failed");
                     self.reports.push(format!("{c}: {error}"));
                 } else {
-                    debug!(node = %c, error, secs = log::secs(took), "failed again");
+                    debug!(node = %c, error, secs, wait = wait_secs, "failed again");
                 }
-                self.waits.push((Instant::now() + self.opts.retry, c));
+                self.waits.push((Instant::now() + wait, c));
             }
         }
         Ok(())

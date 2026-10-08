@@ -17,7 +17,8 @@ pub use backend::{Backend, Block, Conversation};
 pub use claude::ClaudeCode;
 pub use cli::{Cli, Runtime, default_dir, plural};
 pub use compact::{
-    COMPACT, Compactor, JOBS, Job, MARKS, Options, RETRY, SCALE, Step, TRIES, cut_blocks, summarize,
+    COMPACT, Compactor, GaveUp, JOBS, Job, MARKS, Options, RETRIES, RETRY, RETRY_MAX, SCALE, Step,
+    TRIES, cut_blocks, summarize,
 };
 pub use config::{Config, Knob};
 pub use cover::cover;

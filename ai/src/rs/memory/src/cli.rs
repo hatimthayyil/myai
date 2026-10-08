@@ -15,7 +15,7 @@ use tracing::{error, info, info_span};
 use crate::{
     backend::Backend,
     claude::{self, ClaudeCode},
-    compact::{Compactor, Options},
+    compact::{Compactor, GaveUp, Options},
     config::Knob,
     grep::{Grep, grep},
     log, prov,
@@ -394,14 +394,23 @@ fn nap(s: &Store, out: &mut dyn Write, rt: &Runtime) -> Result<ExitCode> {
     .entered();
     let start = Instant::now();
     info!("start");
-    match rounds(s, out, rt) {
-        Ok(built) => info!(built, secs = log::secs(start.elapsed()), "end"),
-        Err(e) => {
-            error!(error = format!("{e:#}"), "failed");
-            return Err(e);
+    let e = match rounds(s, out, rt) {
+        Ok(built) => {
+            info!(built, secs = log::secs(start.elapsed()), "end");
+            return Ok(ExitCode::SUCCESS);
         }
-    }
-    Ok(ExitCode::SUCCESS)
+        Err(e) => e,
+    };
+    let Some(g) = e.downcast_ref::<GaveUp>() else {
+        error!(error = format!("{e:#}"), "failed");
+        return Err(e);
+    };
+    error!(node = %g.node, tries = g.tries, error = g.error, "gave up");
+    writeln!(
+        out,
+        "{g}. It stays pending; the nap after the next note tries again."
+    )?;
+    Ok(ExitCode::FAILURE)
 }
 
 /// Compactor rounds until nothing is due or another compactor holds the lock; the nodes built.
@@ -413,10 +422,13 @@ fn rounds(s: &Store, out: &mut dyn Write, rt: &Runtime) -> Result<u64> {
             info!("busy: another compactor holds the lock; exiting");
             return Ok(built);
         };
-        let retry = rt.opts.retry.as_secs_f64();
+        let retries = rt.opts.retries;
         c.run(|c| {
             for r in c.take_reports() {
-                writeln!(out, "Failed {r}. Retrying every {retry} s; Ctrl-C to stop.")?;
+                writeln!(
+                    out,
+                    "Failed {r}. Retrying up to {retries} times, waiting longer each time."
+                )?;
             }
             Ok(())
         })?;

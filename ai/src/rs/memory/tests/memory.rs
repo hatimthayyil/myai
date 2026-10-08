@@ -12,8 +12,8 @@ use std::{
 };
 
 use ai_memory::{
-    Backend, Block, Cli, Compactor, Conversation, Coord, Kind, Mem, Message, NODE, Options,
-    HIDDEN, PLACEHOLDER, Place, Runtime, Store, VIEW, Who, zoom,
+    Backend, Block, Cli, Compactor, Conversation, Coord, GaveUp, HIDDEN, Kind, Mem, Message, NODE,
+    Options, PLACEHOLDER, Place, Runtime, Store, VIEW, Who, zoom,
 };
 use anyhow::{Result, bail};
 use clap::Parser;
@@ -29,10 +29,7 @@ struct Out {
 fn runtime(backend: Arc<dyn Backend>) -> Runtime {
     Runtime {
         backend: Box::new(move || Ok(backend.clone())),
-        opts: Options {
-            retry: Duration::from_millis(20),
-            ..Options::default()
-        },
+        opts: opts(VIEW, 8),
         nap_on_note: false,
         before_release: Box::new(|| {}),
     }
@@ -207,6 +204,7 @@ fn opts(budget: u64, jobs: usize) -> Options {
     Options {
         jobs,
         retry: Duration::from_millis(20),
+        retries: 3,
         budget,
     }
 }
@@ -571,6 +569,71 @@ fn failures_are_retried_and_reported_once() {
 }
 
 #[test]
+fn a_node_failing_past_its_retries_stops_the_compactor() {
+    let (_tmp, d) = store();
+    let s = Store::open(&d).unwrap();
+    s.append("t", &[msg(Kind::User, long(0))]).unwrap();
+    let dead = Arc::new(Fake::new(|_, _| bail!("logged out")));
+    let mut c = compactor(&s, &dead, opts(VIEW, 8));
+    let e = c.run(|_| Ok(())).unwrap_err();
+    let g = e.downcast_ref::<GaveUp>().expect("gave up");
+    assert_eq!(
+        (g.node, g.tries, g.error.as_str()),
+        (Coord::leaf(0), 4, "logged out")
+    );
+    assert_eq!(
+        dead.calls.load(Ordering::SeqCst),
+        4,
+        "the first try and 3 retries"
+    );
+    drop(c);
+    let fine = Arc::new(Fake::summaries());
+    let mut c = compactor(&s, &fine, opts(VIEW, 8));
+    c.run(|_| Ok(())).unwrap();
+    assert!(c.mem().built(Coord::leaf(0)));
+}
+
+#[test]
+fn a_nap_on_a_dead_backend_gives_up_and_frees_the_lock() {
+    let (_tmp, d) = store();
+    let s = Store::open(&d).unwrap();
+    s.append("t", &[msg(Kind::User, long(0)), msg(Kind::User, long(1))])
+        .unwrap();
+    let dead = Fake::new(|_, _| bail!("usage limit reached"));
+    let r = run_rt(&d, &runtime(Arc::new(Model(Arc::new(dead)))), &["nap"]);
+    assert_eq!(r.code, 1, "{}", r.stderr);
+    let failed = |n| {
+        format!(
+            "Failed {n}+1: usage limit reached. Retrying up to 3 times, waiting longer each time.\n"
+        )
+    };
+    assert!(
+        r.stdout.starts_with(&failed(0)) || r.stdout.starts_with(&failed(1)),
+        "{}",
+        r.stdout
+    );
+    assert!(
+        Regex::new(r"\nGave up on [01]\+1 after 4 failures in a row: usage limit reached\. It stays pending; the nap after the next note tries again\.\n$")
+            .unwrap()
+            .is_match(&r.stdout),
+        "{}",
+        r.stdout
+    );
+    let log = fs::read_to_string(d.join("nap.log")).unwrap();
+    let errors: Vec<&str> = log.lines().filter(|l| l.contains(" ERROR ")).collect();
+    assert_eq!(errors.len(), 1, "{log}");
+    assert!(
+        Regex::new(r#": gave up node=[01]\+1 tries=4 error="usage limit reached"$"#)
+            .unwrap()
+            .is_match(errors[0]),
+        "{log}"
+    );
+    assert!(!log.contains(" end "), "{log}");
+    assert!(!Mem::load(&s.snapshot().unwrap(), VIEW).unwrap().all_built());
+    assert_eq!(run(&d, &["nap"]).stdout, "Built 3 summaries.\n");
+}
+
+#[test]
 fn a_life_through_the_cli() {
     let (tmp, d) = store();
     let d = d.as_path();
@@ -931,7 +994,7 @@ fn a_nap_logs_timestamped_events_to_nap_log() {
     assert!(r.stdout.ends_with("Built 1 summary.\n"), "{}", r.stdout);
     let log = fs::read_to_string(d.join("nap.log")).unwrap();
     let warns = [
-        r#"failed node=2\+1 error="overloaded" secs=[\d.]+"#,
+        r#"failed node=2\+1 error="overloaded" secs=[\d.]+ wait=[\d.]+"#,
         r"over limit node=2\+1 bytes=600 attempt=1",
     ];
     for event in warns {
