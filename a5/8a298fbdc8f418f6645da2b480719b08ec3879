@@ -1,38 +1,66 @@
 ai/src/rs/memory/Cargo.toml
   s_32552ebd17482d::t_ca6e260d22294f 3,17-18
+  s_32552ebd17482d::t_31f3c0e7d6b271 18
+  s_32552ebd17482d::t_e3dbd6d8c003f6 17
 ai/comments/ai/src/rs/memory/src/compact.rs.md
   s_32552ebd17482d::t_ca6e260d22294f 12
+  s_32552ebd17482d::t_3c00d59f213baf 12
 ai/src/rs/chat/Cargo.toml
   s_32552ebd17482d::t_ca6e260d22294f 3
 ai/comments/ai/src/rs/memory/Cargo.toml.md
   s_32552ebd17482d::t_ca6e260d22294f 8
+  s_32552ebd17482d::t_3c00d59f213baf 8
 ai/src/rs/memory/src/cli.rs
   s_32552ebd17482d::t_ca6e260d22294f 8,13,17,21,155,162-163,387-408,413-414,431
+  s_32552ebd17482d::t_23c0b1ac73f174 155,162-163
+  s_32552ebd17482d::t_64381dbb02640e 8,13,17,21
+  s_32552ebd17482d::t_0914e1eadc13cd 391-392
+  s_32552ebd17482d::t_35c9eec41329ba 431
+  s_32552ebd17482d::t_1f6d6e3ed2094d 387-390,393-408,413-414
 ai/comments/ai/src/rs/memory/src/cli.rs.md
   s_32552ebd17482d::t_ca6e260d22294f 5,11
+  s_32552ebd17482d::t_9a7d8bcd857a09 5,11
 ai/src/rs/memory/src/log.rs
   s_32552ebd17482d::t_ca6e260d22294f 1-39
+  s_32552ebd17482d::t_b1dc93665ffec9 1-39
 Cargo.toml
   s_32552ebd17482d::t_ca6e260d22294f 3
 ai/comments/ai/src/rs/memory/src/claude.rs.md
   s_32552ebd17482d::t_ca6e260d22294f 10
+  s_32552ebd17482d::t_3c00d59f213baf 10
 ai/src/rs/memory/src/claude.rs
   s_32552ebd17482d::t_ca6e260d22294f 39-43,311
+  s_32552ebd17482d::t_dfad6f50ac3b77 311
+  s_32552ebd17482d::t_a41d132730ee29 39-43
 ai/comments/ai/src/rs/memory/src/log.rs.md
   s_32552ebd17482d::t_ca6e260d22294f 1-5
+  s_32552ebd17482d::t_3c00d59f213baf 1-5
 ai/comments/ai/src/rs/memory/tests/memory.rs.md
   s_32552ebd17482d::t_ca6e260d22294f 10
+  s_32552ebd17482d::t_3c00d59f213baf 10
 ai/src/rs/memory/tests/memory.rs
   s_32552ebd17482d::t_ca6e260d22294f 896-945
   s_32552ebd17482d::t_6eadbed73c9041 895
+  s_32552ebd17482d::t_0bc185738e654f 940-943
+  s_32552ebd17482d::t_669a4c3cac97af 896-902,904,906-909,911-917,919-920,944-945
+  s_32552ebd17482d::t_bf96dba410b882 903,905,910,918,921-939
+  s_32552ebd17482d::t_1ae9e6a2c397b6 895
 ai/src/rs/memory/src/compact.rs
   s_32552ebd17482d::t_ca6e260d22294f 13,17,102-104,144,257,259-261,263,272,275,287,289-292
+  s_32552ebd17482d::t_4a8e9af669453d 272,275
+  s_32552ebd17482d::t_4716b838b9e7b1 13,17
+  s_32552ebd17482d::t_78217a454c0531 257,259-261,263
+  s_32552ebd17482d::t_ca45622ea49355 102-104
+  s_32552ebd17482d::t_3e602e3ff4c0d4 287,289-292
+  s_32552ebd17482d::t_2558310dac9fa6 144
 ai/src/rs/ai/Cargo.toml
   s_32552ebd17482d::t_ca6e260d22294f 3
 ai/src/rs/memory/src/lib.rs
   s_32552ebd17482d::t_ca6e260d22294f 8
+  s_32552ebd17482d::t_c1e919a56b43ed 8
 Cargo.lock
   s_32552ebd17482d::t_e8afceeb08d54d 22,30,49,61-62,1659-1667,1734,2348-2356,2657-2665,2694-2727
+  s_32552ebd17482d::t_fca09771f17ced 61-62,1659-1667,2348-2356,2657-2665,2694-2727
 ---
 {
   "schema_version": "authorship/3.0.0",
