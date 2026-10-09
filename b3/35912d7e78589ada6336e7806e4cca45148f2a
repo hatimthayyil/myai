@@ -1,0 +1,51 @@
+ai/src/rs/memory/src/hook.rs
+  s_32552ebd17482d::t_12054477ce439b 1-8,11-32
+  s_32552ebd17482d::t_347f1643c31061 9-10
+ai/src/rs/memory/src/cli.rs
+  s_32552ebd17482d::t_347f1643c31061 22,262
+  s_32552ebd17482d::t_8204dc14ff21e2 145-146,181,186,194,204,256,258-261,263-267,274,288
+ai/src/rs/memory/prompts/reminder.txt
+  s_32552ebd17482d::t_12054477ce439b 1
+ai/src/rs/memory/src/lib.rs
+  s_32552ebd17482d::t_05e29ef98201d8 8,29
+ai/backlog.md
+  s_32552ebd17482d::t_d53f6e3221bde8 22
+ai/src/rs/memory/tests/memory.rs
+  s_32552ebd17482d::t_9b3c16e324fe5c 15-17,36,76-84,1161-1164,1179,1223-1293
+ai/comments/ai/src/rs/memory/src/hook.rs.md
+  s_32552ebd17482d::t_21c08ab547b148 1-8
+ai/comments/ai/src/rs/memory/tests/memory.rs.md
+  s_32552ebd17482d::t_21c08ab547b148 15-16
+ai/comments/ai/src/rs/memory/src/cli.rs.md
+  s_32552ebd17482d::t_21c08ab547b148 18
+ai/comments/ai/src/rs/memory/src/stats.rs.md
+  s_32552ebd17482d::t_21c08ab547b148 4-5
+ai/src/rs/memory/src/stats.rs
+  s_32552ebd17482d::t_347f1643c31061 9,180,182-185,215-221
+Cargo.lock
+  s_32552ebd17482d::t_29f356be891add 22,30,49,1745
+Cargo.toml
+  s_32552ebd17482d::t_adabb9eb6e08cb 3
+ai/src/rs/ai/Cargo.toml
+  s_32552ebd17482d::t_d71967ebd81167 3
+ai/src/rs/chat/Cargo.toml
+  s_32552ebd17482d::t_10473330f093c1 3
+ai/src/rs/memory/Cargo.toml
+  s_32552ebd17482d::t_76213d58cf6ae8 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b335912d7e78589ada6336e7806e4cca45148f2a",
+  "prompts": {},
+  "sessions": {
+    "s_32552ebd17482d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a87491ed-08a1-4f25-a17f-a6bc58caa31a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
