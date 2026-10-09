@@ -459,9 +459,156 @@ fn nothing_is_written_outside_the_store() {
             "hooks",
             "info",
             "objects",
-            "refs"
+            "refs",
+            "usage.jsonl"
         ]
     );
+}
+
+fn usage(s: &Sandbox) -> Vec<serde_json::Value> {
+    fs::read_to_string(s.store().join("usage.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+#[test]
+fn every_command_logs_one_usage_line() {
+    let s = Sandbox::new();
+    assert!(s.ai(&["init"]).status.success());
+    assert!(!s.store().join("usage.jsonl").exists());
+    let work = s.path().join("work");
+    fs::create_dir(&work).unwrap();
+    s.git(&work, &["init", "-q", "-b", "trunk"]);
+    s.git(&work, &["commit", "-q", "--allow-empty", "-m", "c"]);
+    s.git(
+        &work,
+        &["remote", "add", "origin", "git@github.com:acme/widget.git"],
+    );
+    let by = |args: &[&str], session: &str| {
+        s.cmd(&work, Some(&s.store()))
+            .args(args)
+            .env("AI_AGENT", "pi")
+            .env("AI_MODEL", "m1")
+            .env("AI_SESSION", session)
+            .output()
+            .unwrap()
+    };
+    for (args, session) in [
+        (&["wake"][..], "s1"),
+        (&["note", "a noted memory"], "s1"),
+        (&["note", "two\nlines"], "s1"),
+        (&["zoom", "0+1", "--time", "-o", "repo"], "s1"),
+        (&["zoom", "9+1"], "s1"),
+        (&["grep", "it's", "-t", "-m", "3", "--before", "0+1"], "s1"),
+        (&["show", "0"], "s2"),
+    ] {
+        by(args, session);
+    }
+    let log = usage(&s);
+    let fields = |k: &str| -> Vec<String> {
+        log.iter()
+            .map(|u| match &u[k] {
+                serde_json::Value::String(v) => v.clone(),
+                v => v.to_string(),
+            })
+            .collect()
+    };
+    assert_eq!(
+        fields("cmd"),
+        ["wake", "note", "note", "zoom", "zoom", "grep", "show"]
+    );
+    assert_eq!(
+        fields("args"),
+        [
+            "[]",
+            "[]",
+            "[]",
+            r#"["0+1","--time","-o","repo"]"#,
+            r#"["9+1"]"#,
+            r#"["it's","-t","-m","3","--before","0+1"]"#,
+            r#"["0"]"#
+        ]
+    );
+    assert_eq!(
+        fields("ok"),
+        ["true", "true", "false", "true", "false", "true", "true"]
+    );
+    assert_eq!(log[4]["error"], "No line 9+1.");
+    assert!(log[2]["error"].as_str().unwrap().contains("one line"));
+    assert!(log[0].get("error").is_none());
+    assert_eq!(log[1]["lines"], 1);
+    assert_eq!(log[1]["bytes"], "Saved as 0+1.\n".len());
+    assert_eq!(log[6]["lines"], 11);
+    assert_eq!(log[4]["bytes"], 0);
+    for (k, v) in [
+        ("agent", "pi"),
+        ("model", "m1"),
+        ("repo", "acme/widget"),
+        ("branch", "trunk"),
+    ] {
+        assert!(fields(k).iter().all(|f| f == v), "{k}: {:?}", fields(k));
+    }
+    assert_eq!(fields("session")[5..], ["s1", "s2"]);
+    let ts = |t: &String| t.len() == 16 && t[8..9] == *"T" && t.ends_with('Z');
+    assert!(fields("ts").iter().all(ts), "{:?}", fields("ts"));
+
+    let r = s.ai(&["stats", "--since", "2020-01-01", "--by", "agent"]);
+    assert_eq!(
+        text(&r.stdout),
+        "Since 2020-01-01, UTC.\n\
+         agent  wake  note  zoom  grep  show\n\
+         pi        1     1     1     1     1\n\
+         all       1     1     1     1     1\n\
+         \n\
+         2 sessions, 1 woke.\n\
+         Per woken session: 1.0 notes, 1.0 zooms, 1.0 greps, 0.0 shows.\n\
+         Of these, 100% noted, 100% zoomed, 100% grepped, 0% showed.\n\
+         Failed: 1 note, 1 zoom.\n",
+        "{}",
+        text(&r.stderr)
+    );
+    assert_eq!(usage(&s).last().unwrap()["cmd"], "stats");
+    assert_eq!(
+        usage(&s).last().unwrap()["args"],
+        serde_json::json!(["--since", "2020-01-01", "--by", "agent"])
+    );
+}
+
+#[test]
+fn parallel_reads_log_whole_lines() {
+    let s = Sandbox::new();
+    assert!(s.ai(&["init"]).status.success());
+    assert!(s.ai(&["note", "one memory"]).status.success());
+    let p = 16;
+    let pattern = "p".repeat(10_000);
+    let kids: Vec<_> = (0..p)
+        .map(|_| {
+            s.cmd(s.path(), Some(&s.store()))
+                .args(["grep", &pattern])
+                .stdout(Stdio::null())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    for mut k in kids {
+        assert!(k.wait().unwrap().success());
+    }
+    let log = usage(&s);
+    assert_eq!(log.len(), p + 1);
+    assert!(log[1..].iter().all(|u| u["args"][0] == pattern.as_str()));
+}
+
+#[test]
+fn an_unwritable_usage_log_fails_nothing() {
+    let s = Sandbox::new();
+    assert!(s.ai(&["init"]).status.success());
+    fs::create_dir(s.store().join("usage.jsonl")).unwrap();
+    let r = s.ai(&["note", "still saved"]);
+    assert!(r.status.success() && text(&r.stderr).is_empty());
+    let r = s.ai(&["wake"]);
+    assert!(r.status.success() && text(&r.stdout).contains("still saved"));
 }
 
 #[test]

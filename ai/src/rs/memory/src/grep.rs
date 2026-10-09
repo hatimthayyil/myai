@@ -170,17 +170,22 @@ impl Grep {
         self.kind.is_some() || self.repo.is_some()
     }
 
-    fn command(&self) -> String {
-        let mut c = format!("{ME} grep {}", quote(&self.pattern));
+    /// The arguments, as typed, but `--before`.
+    fn args(&self) -> Vec<String> {
+        let mut a = vec![self.pattern.clone()];
         let flags = [
             (self.fixed_strings, "-F"),
             (self.ignore_case, "-i"),
             (self.case_sensitive, "-s"),
             (self.tree, "-t"),
+            (self.count, "-c"),
         ];
-        for (_, f) in flags.iter().filter(|(on, _)| *on) {
-            c += &format!(" {f}");
-        }
+        a.extend(
+            flags
+                .iter()
+                .filter(|(on, _)| *on)
+                .map(|(_, f)| f.to_string()),
+        );
         let opts = [
             ("--since", self.since.map(|d| d.to_string())),
             ("--kind", self.kind.map(|k| k.name().into())),
@@ -193,10 +198,26 @@ impl Grep {
         ];
         for (f, v) in opts {
             if let Some(v) = v {
-                c += &format!(" {f} {}", word(&v));
+                a.extend([f.to_string(), v]);
             }
         }
-        c + &self.meta.flags()
+        a.extend(self.meta.args());
+        a
+    }
+
+    /// Every argument, as typed.
+    pub fn typed(&self) -> Vec<String> {
+        let mut a = self.args();
+        if let Some(b) = &self.before {
+            a.extend(["--before".into(), b.clone()]);
+        }
+        a
+    }
+
+    fn command(&self) -> String {
+        let a = self.args();
+        let rest: String = a[1..].iter().map(|v| format!(" {}", word(v))).collect();
+        format!("{ME} grep {}{rest}", quote(&a[0]))
     }
 }
 

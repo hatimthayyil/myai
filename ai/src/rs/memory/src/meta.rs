@@ -61,7 +61,7 @@ pub struct Meta {
     pub fields: Vec<Field>,
 }
 
-fn date(ts: &str) -> String {
+pub fn date(ts: &str) -> String {
     format!("{}-{}-{}", &ts[..4], &ts[4..6], &ts[6..8])
 }
 
@@ -136,16 +136,21 @@ impl Meta {
     }
 
     /// The flags that ask for this, as typed.
-    pub fn flags(&self) -> String {
-        let mut f = String::new();
+    pub fn args(&self) -> Vec<String> {
+        let mut a = Vec::new();
         if self.time {
-            f += " --time";
+            a.push("--time".into());
         }
         if !self.fields.is_empty() {
             let names: Vec<_> = self.fields.iter().map(|f| f.name()).collect();
-            f += &format!(" -o {}", names.join(","));
+            a.extend(["-o".into(), names.join(",")]);
         }
-        f
+        a
+    }
+
+    /// [`Meta::args`], each after a space.
+    pub fn flags(&self) -> String {
+        self.args().iter().map(|a| format!(" {a}")).collect()
     }
 }
 

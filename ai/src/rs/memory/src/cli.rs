@@ -17,14 +17,16 @@ use crate::{
     claude::{self, ClaudeCode},
     compact::{Compactor, GaveUp, Options},
     config::Knob,
+    cover::cover,
     grep::{Grep, grep},
     log,
     meta::Meta,
     prov,
-    record::{Kind, Message, midnight},
-    cover::cover,
+    record::{Kind, Message, Place, Who, midnight},
+    stats::{Stats, stats},
     store::{AtPath, ME, Snapshot, Store, pretty},
     tree::Coord,
+    usage::{self, Tally, Use},
     view::{Mem, PLACEHOLDER, VIEW},
     zoom::{page, zoom},
 };
@@ -137,6 +139,44 @@ enum Command {
     },
     #[command(about = "bulk-load dated notes (bootstrap only).")]
     Import { file: PathBuf },
+    #[command(about = "count how often agents wake, note, zoom, grep and show.")]
+    Stats(Stats),
+}
+
+impl Command {
+    /// Its name and arguments, as typed; a note's text is in the store.
+    fn typed(&self) -> (&'static str, Vec<String>) {
+        let part = |p: &Option<u64>| p.map(|p| p.to_string());
+        match self {
+            Command::Init => ("init", Vec::new()),
+            Command::Wake {
+                part: p,
+                commit,
+                meta,
+            } => (
+                "wake",
+                part(p)
+                    .into_iter()
+                    .chain(commit.clone())
+                    .chain(meta.args())
+                    .collect(),
+            ),
+            Command::Note { .. } => ("note", Vec::new()),
+            Command::Nap => ("nap", Vec::new()),
+            Command::Grep(g) => ("grep", g.typed()),
+            Command::Zoom { id, part: p, meta } => (
+                "zoom",
+                std::iter::once(id.clone())
+                    .chain(part(p))
+                    .chain(meta.args())
+                    .collect(),
+            ),
+            Command::Show { id } => ("show", vec![id.clone()]),
+            Command::Config { sets } => ("config", sets.clone()),
+            Command::Import { file } => ("import", vec![file.display().to_string()]),
+            Command::Stats(st) => ("stats", st.args()),
+        }
+    }
 }
 
 /// How commands reach the compactor's model; tests swap in their own.
@@ -203,20 +243,47 @@ impl Cli {
             return init(dir, out);
         }
         let s = Store::open(dir)?;
-        match self.command {
+        let place = std::env::current_dir()
+            .map(|cwd| prov::place(&cwd))
+            .unwrap_or_default();
+        let who = prov::env_who();
+        let (cmd, args) = self.command.typed();
+        let mut out = Tally::new(out);
+        let r = self.command.run(&s, &mut out, rt, &place, &who);
+        let error = match &r {
+            Ok(c) if *c == ExitCode::SUCCESS => None,
+            Ok(_) => Some("exit 1".into()),
+            Err(e) => Some(format!("{e:#}")),
+        };
+        let _ = usage::record(dir, &Use::new(cmd, args, &place, &who, &out, error));
+        r
+    }
+}
+
+impl Command {
+    fn run(
+        self,
+        s: &Store,
+        out: &mut dyn Write,
+        rt: &Runtime,
+        place: &Place,
+        who: &Who,
+    ) -> Result<ExitCode> {
+        match self {
             Command::Init => unreachable!(),
             Command::Wake { part, commit, meta } => {
-                wake(&s, out, part.unwrap_or(1), commit.as_deref(), &meta)
+                wake(s, out, part.unwrap_or(1), commit.as_deref(), &meta)
             }
-            Command::Note { text } => note(&s, out, &text, rt),
-            Command::Nap => nap(&s, out, rt),
+            Command::Note { text } => note(s, out, &text, rt, place, who),
+            Command::Nap => nap(s, out, rt),
             Command::Grep(g) => grep(&s.snapshot()?, out, &g),
             Command::Zoom { id, part, meta } => {
                 zoom_cmd(&s.snapshot()?, out, &id, part.unwrap_or(1), &meta)
             }
             Command::Show { id } => show(&s.snapshot()?, out, &id),
-            Command::Config { sets } => config(&s, out, &sets),
-            Command::Import { file } => import(&s, out, &file),
+            Command::Config { sets } => config(s, out, &sets),
+            Command::Import { file } => import(s, out, &file),
+            Command::Stats(st) => stats(&s.snapshot()?, s.dir(), out, &st),
         }
     }
 }
@@ -383,12 +450,18 @@ fn wake_lines(snap: &Snapshot, c: Coord, meta: &Meta, out: &mut Vec<String>) -> 
     Ok(())
 }
 
-fn note(s: &Store, out: &mut dyn Write, text: &str, rt: &Runtime) -> Result<ExitCode> {
+fn note(
+    s: &Store,
+    out: &mut dyn Write,
+    text: &str,
+    rt: &Runtime,
+    place: &Place,
+    who: &Who,
+) -> Result<ExitCode> {
     let text = check(text, s.cfg.get(Knob::EntryChars))?;
-    let cwd = std::env::current_dir().context("Cannot read the current directory.")?;
     let m = Message {
-        place: prov::place(&cwd),
-        who: prov::env_who(),
+        place: place.clone(),
+        who: who.clone(),
         ..Message::new(Kind::Note, text)
     };
     let (i, _, _) = s.append("note", &[m])?;

@@ -9,8 +9,10 @@ mod log;
 mod meta;
 pub mod prov;
 mod record;
+mod stats;
 mod store;
 mod tree;
+mod usage;
 mod view;
 mod zoom;
 

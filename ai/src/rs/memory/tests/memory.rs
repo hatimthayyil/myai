@@ -1097,3 +1097,110 @@ fn a_note_whose_nap_finds_the_lock_taken_still_gets_built() {
     assert!(m.built(Coord::leaf(1)) && m.built(Coord::new(1, 0)));
     assert_eq!(run(&d, &["nap"]).stdout, "Nothing to build.\n");
 }
+
+#[test]
+fn stats_count_notes_from_the_store_and_reads_from_the_usage_log() {
+    let (_tmp, d) = store();
+    let r = run(&d, &["stats"]);
+    assert!(
+        Regex::new(r"^Since \d{4}-\d\d-\d\d, UTC\.\nNo calls\.\n$")
+            .unwrap()
+            .is_match(&r.stdout),
+        "{}{}",
+        r.stdout,
+        r.stderr
+    );
+    let s = Store::open(&d).unwrap();
+    let note = |ts: &str, agent: &str, repo: &str, session: &str| Message {
+        ts: ts.into(),
+        place: Place {
+            repo: repo.into(),
+            ..Place::default()
+        },
+        who: Who {
+            agent: agent.into(),
+            model: "m".into(),
+            session: session.into(),
+        },
+        ..msg(Kind::Note, "noted")
+    };
+    s.append(
+        "t",
+        &[
+            note("20200228T100000Z", "claude-code", "acme/a", "s0"),
+            note("20200301T090000Z", "claude-code", "acme/a", "s1"),
+            note("20200301T091000Z", "claude-code", "acme/a", "s1"),
+            note("20200302T100000Z", "codex", "acme/b", "s2"),
+            note("20200302T110000Z", "", "", ""),
+        ],
+    )
+    .unwrap();
+    let call = |ts: &str, cmd: &str, ok: bool, agent: &str, repo: &str, session: &str| {
+        format!(
+            r#"{{"ts":"{ts}","cmd":"{cmd}","args":[],"ok":{ok},"lines":1,"bytes":9,"agent":"{agent}","model":"m","session":"{session}","repo":"{repo}","branch":"main"}}"#
+        )
+    };
+    let (a, b) = (("claude-code", "acme/a"), ("codex", "acme/b"));
+    let log = [
+        call("20200228T090000Z", "wake", true, a.0, a.1, "s0"),
+        call("20200301T085900Z", "wake", true, a.0, a.1, "s1"),
+        call("20200301T092000Z", "zoom", true, a.0, a.1, "s1"),
+        call("20200301T092100Z", "zoom", true, a.0, a.1, "s1"),
+        call("20200301T092200Z", "grep", false, a.0, a.1, "s1"),
+        "torn".into(),
+        call("20200302T095900Z", "wake", true, b.0, b.1, "s2"),
+        call("20200302T100500Z", "show", true, b.0, b.1, "s2"),
+        call("20200302T120000Z", "wake", true, b.0, b.1, "s3"),
+        call("20200302T120100Z", "note", false, b.0, b.1, "s3"),
+        call("20200302T120200Z", "note", true, b.0, b.1, "s3"),
+        call("20200302T130000Z", "nap", true, b.0, b.1, "s3"),
+    ];
+    fs::write(d.join("usage.jsonl"), log.join("\n") + "\n").unwrap();
+
+    let sessions = "\n\
+         3 sessions, 3 woke.\n\
+         Per woken session: 1.0 notes, 0.7 zooms, 0.0 greps, 0.3 shows.\n\
+         Of these, 67% noted, 33% zoomed, 0% grepped, 33% showed.\n\
+         Failed: 1 note, 1 grep.\n";
+    let r = run(&d, &["stats", "--since", "2020-03-01"]);
+    assert_eq!(
+        r.stdout,
+        "Since 2020-03-01, UTC.\n\
+         day         wake  note  zoom  grep  show\n\
+         2020-03-01     1     2     2     0     0\n\
+         2020-03-02     2     2     0     0     1\n\
+         all            3     4     2     0     1\n"
+            .to_string()
+            + sessions,
+        "{}",
+        r.stderr
+    );
+    let r = run(&d, &["stats", "--since", "2020-03-01", "--by", "repo"]);
+    assert_eq!(
+        r.stdout,
+        "Since 2020-03-01, UTC.\n\
+         repo    wake  note  zoom  grep  show\n\
+         acme/a     1     2     2     0     0\n\
+         acme/b     2     1     0     0     1\n\
+         -          0     1     0     0     0\n\
+         all        3     4     2     0     1\n"
+            .to_string()
+            + sessions
+    );
+    let r = run(&d, &["stats", "--since", "2020-02-01", "--by", "session"]);
+    assert!(
+        r.stdout
+            .contains("\ns0          1     1     0     0     0\n")
+            && r.stdout.contains("\n4 sessions, 4 woke.\n"),
+        "{}",
+        r.stdout
+    );
+    let r = run(&d, &["stats", "--since", "2020-03-02", "--by", "agent"]);
+    assert!(
+        r.stdout.contains(
+            "\ncodex     2     1     0     0     1\n-         0     1     0     0     0\n"
+        ),
+        "{}",
+        r.stdout
+    );
+}
