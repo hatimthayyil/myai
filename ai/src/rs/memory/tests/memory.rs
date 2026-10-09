@@ -12,8 +12,8 @@ use std::{
 };
 
 use ai_memory::{
-    Backend, Block, Cli, Compactor, Conversation, Coord, GaveUp, HIDDEN, Kind, Mem, Message, NODE,
-    Options, PLACEHOLDER, Place, Runtime, Store, VIEW, Who, zoom,
+    Backend, Block, Cli, Compactor, Conversation, Coord, Field, GaveUp, HIDDEN, Kind, Mem, Message,
+    Meta, NODE, Options, PLACEHOLDER, Place, Runtime, Store, VIEW, Who, zoom,
 };
 use anyhow::{Result, bail};
 use clap::Parser;
@@ -351,8 +351,8 @@ fn short_messages_are_their_own_nodes() {
         }
     );
     assert_eq!(free.origin, s.origin());
-    let exact = "x".repeat(NODE - "note: ".len());
-    let line = format!("note: {exact}");
+    let exact = "x".repeat(NODE);
+    let line = exact.clone();
     let (_, built, snap) = s.append("t", &[msg(Kind::Note, exact.clone())]).unwrap();
     let names: Vec<_> = built.iter().map(|(c, t)| format!("{c}={t}")).collect();
     assert_eq!(
@@ -365,7 +365,7 @@ fn short_messages_are_their_own_nodes() {
         "the merge of a long line and a full one is not free"
     );
     assert_eq!(
-        zoom(&snap, 2, 2).unwrap().unwrap(),
+        zoom(&snap, 2, 2, None).unwrap().unwrap(),
         format!("2+1|{HIDDEN}\n3+1|{line}")
     );
     let (built, _) = s.put_node(Coord::new(2, 0), &fake_who(), "merged").unwrap();
@@ -390,7 +390,7 @@ fn zoom_opens_one_level() {
     s.append("t", &items).unwrap();
     s.append("t", &[msg(Kind::Ai, long(5))]).unwrap();
     let snap = s.snapshot().unwrap();
-    let z = |id, n| zoom(&snap, id, n).unwrap();
+    let z = |id, n| zoom(&snap, id, n, None).unwrap();
     assert_eq!(z(1, 1).unwrap(), "1+0|user: word 1\nmore");
     assert_eq!(z(5, 1).unwrap(), format!("5+0|ai: {}", long(5)));
     assert_eq!(
@@ -406,6 +406,20 @@ fn zoom_opens_one_level() {
     assert_eq!(z(0, 8), None);
     assert_eq!(z(6, 1), None);
     assert_eq!(z(0, 3), None);
+    let meta = Meta {
+        time: false,
+        fields: vec![Field::Kind, Field::Agent],
+    };
+    let ts = snap.message(0).unwrap().ts;
+    let day = format!("{}-{}-{}", &ts[..4], &ts[4..6], &ts[6..8]);
+    assert_eq!(
+        zoom(&snap, 0, 2, Some(&meta)).unwrap().unwrap(),
+        format!("0+1|{day}|user|-|user: word 0 more\n1+1|{day}|user|-|user: word 1 more")
+    );
+    assert_eq!(
+        zoom(&snap, 5, 1, Some(&Meta::default())).unwrap().unwrap(),
+        format!("5+0|{day}|ai: {}", long(5))
+    );
 }
 
 #[test]
@@ -663,11 +677,16 @@ fn a_life_through_the_cli() {
     assert_eq!(r.stdout, "Saved as 41+1.\n");
 
     let wake = run(d, &["wake"]).stdout;
-    assert!(
-        wake.starts_with("0+1|note: message 0 nnn"),
-        "{wake}"
+    let ts = Store::open(d).unwrap().snapshot().unwrap().message(40).unwrap().ts;
+    let (today, now) = (
+        format!("{}-{}-{}", &ts[..4], &ts[4..6], &ts[6..8]),
+        format!("{}:{}", &ts[9..11], &ts[11..13]),
     );
-    assert!(wake.contains("\n40+1|note: a short one\n"));
+    assert!(wake.starts_with("0+1|2020-01-01|message 0 nnn"), "{wake}");
+    assert!(wake.contains(&format!("\n40+1|{today}|a short one\n")), "{wake}");
+    let wake = run(d, &["wake", "--time", "-o", "kind,repo"]).stdout;
+    assert!(wake.starts_with("0+1|2020-01-01 00:00|note|-|message 0 nnn"), "{wake}");
+    assert!(wake.contains(&format!("\n40+1|{today} {now}|note|")), "{wake}");
     assert!(wake.ends_with("\nYou are awake.\n"));
 
     let rt = runtime(Arc::new(Model(Arc::new(Fake::summaries()))));
@@ -739,12 +758,15 @@ fn a_life_through_the_cli() {
 
     let z = run(d, &["zoom", "0+32"]).stdout;
     assert_eq!(z.lines().count(), 2);
-    assert!(z.starts_with("0+16|") && z.contains("\n16+16|"));
+    assert!(z.starts_with("0+16|2020-01-01..01-08|") && z.contains("\n16+16|2020-01-09..01-16|"));
     assert!(
         run(d, &["zoom", "3"])
             .stdout
-            .starts_with("3+0|note: message 3 n")
+            .starts_with("3+0|2020-01-02|message 3 n")
     );
+    let z = run(d, &["zoom", "32+8", "-o", "repo"]).stdout;
+    assert!(z.starts_with("32+4|2020-01-17..01-18|-|"), "{z}");
+    assert!(z.contains("\n36+4|2020-01-19..01-20|-|"), "{z}");
     assert_eq!(run(d, &["zoom", "0+64"]).stderr, "No line 0+64.");
     assert_eq!(run(d, &["zoom", "1+2"]).stderr, "No line 1+2.");
     assert!(run(d, &["zoom", "x"]).stderr.contains("not an id+n"));
@@ -784,10 +806,10 @@ fn a_life_through_the_cli() {
         "{show}"
     );
 
-    let g = run(d, &["grep", "message 3\\b"]).stdout;
+    let g = run(d, &["grep", "message 3\\b", "--time", "-o", "origin,repo"]).stdout;
     assert!(
         g.starts_with(&format!(
-            "3+1 2020-01-02 00:00 {origin} - note: message 3 nnn"
+            "3+1|2020-01-02 00:00|{origin}|-|message 3 nnn"
         )),
         "{g}"
     );
@@ -836,8 +858,13 @@ fn a_life_through_the_cli() {
         footer,
         "Newest 5 of 40. Older: ai memory grep 'message' -m 5 --before 35+1"
     );
+    let g = run(d, &["grep", "message", "-m", "1", "--time", "-o", "repo,kind"]).stdout;
+    assert_eq!(
+        g.lines().last().unwrap(),
+        "Newest 1 of 40. Older: ai memory grep 'message' -m 1 --time -o repo,kind --before 39+1"
+    );
     let g = run(d, &["grep", "big"]).stdout;
-    assert!(g.contains("note: big bbb"));
+    assert!(g.starts_with(&format!("41+1|{today}|big bbb")), "{g}");
     assert_eq!(run(d, &["grep", "^"]).code, 0);
 
     let bad = tmp.path().join("bad.txt");
@@ -845,7 +872,13 @@ fn a_life_through_the_cli() {
     assert!(
         run(d, &["import", bad.to_str().unwrap()])
             .stderr
-            .contains("precedes")
+            .contains("the log is in time order")
+    );
+    fs::write(&bad, "2099-01-02 later\n2099-01-01 back\n").unwrap();
+    assert!(
+        run(d, &["import", bad.to_str().unwrap()])
+            .stderr
+            .contains("line 2: date 2099-01-01 precedes")
     );
     fs::write(&bad, "2021-02-30 no such day\n").unwrap();
     assert!(
@@ -912,6 +945,33 @@ fn every_store_has_one_origin_stamped_on_what_it_writes() {
 }
 
 #[test]
+fn the_log_is_in_time_order() {
+    let (_tmp, d) = store();
+    let s = Store::open(&d).unwrap();
+    let at = |ts: &str| Message {
+        ts: ts.into(),
+        ..msg(Kind::Note, "dated")
+    };
+    assert!(msg(Kind::Note, "x").ts.is_empty(), "stamped by the store");
+    s.append("t", &[msg(Kind::Note, "now")]).unwrap();
+    let now = s.snapshot().unwrap().message(0).unwrap().ts;
+    assert_eq!(now.len(), 16);
+    let Err(e) = s.append("t", &[at("20200101T000000Z")]) else {
+        panic!("an earlier ts was appended");
+    };
+    assert!(e.to_string().contains("2020-01-01 00:00 cannot follow"), "{e}");
+    s.append("t", &[at("29990101T000000Z"), msg(Kind::Note, "late")])
+        .unwrap();
+    let snap = s.snapshot().unwrap();
+    assert_eq!(snap.log_len().unwrap(), 3);
+    assert_eq!(
+        snap.message(2).unwrap().ts,
+        "29990101T000000Z",
+        "never stamped before the last message"
+    );
+}
+
+#[test]
 fn the_note_limit_is_a_knob_up_to_one_node() {
     let (_tmp, d) = store();
     assert_eq!(run(&d, &["config", "ENTRY_CHARS=10"]).code, 0);
@@ -923,9 +983,9 @@ fn the_note_limit_is_a_knob_up_to_one_node() {
     assert_eq!(run(&d, &["note", "ten chars!"]).code, 0);
     assert!(run(&d, &["init"]).stdout.contains("max 10 bytes"));
     assert!(
-        run(&d, &["config", "ENTRY_CHARS=507"])
+        run(&d, &["config", "ENTRY_CHARS=513"])
             .stderr
-            .contains("at most 506")
+            .contains("at most 512")
     );
 }
 

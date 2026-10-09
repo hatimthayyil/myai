@@ -1,15 +1,18 @@
 use anyhow::{Result, bail};
 
-use crate::{store::Snapshot, tree::Coord, view::HIDDEN};
+use crate::{meta::Meta, store::Snapshot, tree::Coord, view::HIDDEN};
 
-/// Line `id+n` opened: the two lines of `n/2` under it, or for `n = 1` the message whole.
-/// `None` when `id+n` is not a built line.
-pub fn zoom(s: &Snapshot, id: u64, n: u64) -> Result<Option<String>> {
+/// Line `id+n` opened: the two lines of `n/2` under it, or for `n = 1` the message whole,
+/// each with `meta`'s head if given. `None` when `id+n` is not a built line.
+pub fn zoom(s: &Snapshot, id: u64, n: u64, meta: Option<&Meta>) -> Result<Option<String>> {
     let Some(c) = Coord::at(id, n, s.log_len()?) else {
         return Ok(None);
     };
+    let head = |c| meta.map_or(Ok(String::new()), |m| m.head_at(s, c));
     if c.l == 0 {
-        return Ok(Some(format!("{id}+0|{}", s.message(id)?.label())));
+        let m = s.message(id)?;
+        let h = meta.map_or(String::new(), |h| h.head(std::slice::from_ref(&m)));
+        return Ok(Some(format!("{id}+0|{h}{}", m.label())));
     }
     if s.node(c)?.is_none() {
         return Ok(None);
@@ -20,7 +23,7 @@ pub fn zoom(s: &Snapshot, id: u64, n: u64) -> Result<Option<String>> {
             return Ok(None);
         };
         let text = if node.text.is_empty() { HIDDEN } else { &node.text };
-        lines.push(format!("{k}|{text}"));
+        lines.push(format!("{k}|{}{text}", head(k)?));
     }
     Ok(Some(lines.join("\n")))
 }

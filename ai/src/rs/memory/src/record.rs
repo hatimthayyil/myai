@@ -78,22 +78,15 @@ pub fn flat(s: &str) -> String {
     s.replace("\r\n", " ").replace(['\r', '\n'], " ")
 }
 
-fn date(ts: &str) -> String {
-    format!("{}-{}-{}", &ts[..4], &ts[4..6], &ts[6..8])
-}
-
-fn time(ts: &str) -> String {
-    format!("{}:{}", &ts[9..11], &ts[11..13])
-}
-
 fn valid_ts(ts: &str) -> bool {
     DateTime::strptime(TS, ts).is_ok()
 }
 
 impl Message {
+    /// Unstamped: [`crate::Store::append`] gives it the time it lands in the log.
     pub fn new(kind: Kind, text: &str) -> Message {
         Message {
-            ts: now(),
+            ts: String::new(),
             kind,
             origin: String::new(),
             place: Place::default(),
@@ -149,18 +142,17 @@ impl Message {
         })
     }
 
-    /// `kind: text`, the message as the tree sees it.
+    /// The message as the tree sees it: a note bare, a chat message as `kind: text`.
     pub fn label(&self) -> String {
-        format!("{}: {}", self.kind.name(), self.text)
+        match self.kind {
+            Kind::Note => self.text.clone(),
+            k => format!("{}: {}", k.name(), self.text),
+        }
     }
 
     /// Its leaf: the flat label, or empty for a kind not [`Kind::shown`].
     pub fn line(&self) -> String {
         if self.kind.shown() { flat(&self.label()) } else { String::new() }
-    }
-
-    pub fn date(&self) -> String {
-        date(&self.ts)
     }
 
     /// `YYYY-MM-DD HH:MM` in the time zone `tz`.
@@ -171,17 +163,6 @@ impl Message {
         at.with_time_zone(tz.clone())
             .strftime("%Y-%m-%d %H:%M")
             .to_string()
-    }
-
-    /// `<date> <hh:mm> <origin> <repo>`, UTC.
-    pub fn stamp(&self) -> String {
-        format!(
-            "{} {} {} {}",
-            date(&self.ts),
-            time(&self.ts),
-            self.origin,
-            self.place.repo
-        )
     }
 }
 
@@ -205,10 +186,6 @@ impl Node {
             },
             text: text.into(),
         })
-    }
-
-    pub fn date(&self) -> String {
-        format!("{} {}", date(&self.ts), time(&self.ts))
     }
 }
 
@@ -261,7 +238,8 @@ mod tests {
         assert_eq!(back.who.session, "ünï");
         assert_eq!(back.text, m.text);
         assert_eq!(back.label(), "tool: line one\nline two\n");
-        assert_eq!(back.stamp(), "2026-10-03 14:22 7KQ2ZD acme/widget");
+        let note = Message { kind: Kind::Note, ..back.clone() };
+        assert_eq!(note.label(), "line one\nline two\n");
         let tz = TimeZone::fixed(jiff::tz::offset(-15));
         assert_eq!(back.time_in(&tz), "2026-10-02 23:22");
         assert_eq!(back.time_in(&TimeZone::UTC), "2026-10-03 14:22");

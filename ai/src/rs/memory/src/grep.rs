@@ -7,6 +7,7 @@ use regex::{Regex, RegexBuilder};
 use crate::{
     cli::{line_id, plural},
     config::Knob,
+    meta::Meta,
     record::{Kind, Message, Who, flat, midnight},
     store::{ME, Snapshot},
     tree::Coord,
@@ -70,6 +71,8 @@ pub struct Grep {
     context: u64,
     #[arg(short, long, help = "print only the count")]
     count: bool,
+    #[command(flatten)]
+    meta: Meta,
 }
 
 type Key = (u64, u64);
@@ -120,13 +123,12 @@ fn excerpt(text: &str, pat: Option<&Regex>) -> String {
     format!("{pre}{}{post}", &text[lo..hi])
 }
 
-fn detail(i: u64, m: &Message, pat: Option<&Regex>) -> String {
+fn detail(i: u64, m: &Message, meta: &Meta, pat: Option<&Regex>) -> String {
     format!(
-        "{} {} {}: {}",
+        "{}|{}{}",
         Coord::leaf(i),
-        m.stamp(),
-        m.kind.name(),
-        excerpt(&m.text, pat)
+        meta.head(std::slice::from_ref(m)),
+        excerpt(&m.label(), pat)
     )
 }
 
@@ -194,7 +196,7 @@ impl Grep {
                 c += &format!(" {f} {}", word(&v));
             }
         }
-        c
+        c + &self.meta.flags()
     }
 }
 
@@ -293,14 +295,14 @@ pub fn grep(s: &Snapshot, out: &mut dyn Write, g: &Grep) -> Result<ExitCode> {
             hits += 1;
             let first = ring.front().map_or(i, |&(j, _)| j);
             let mut lines: Vec<_> = ring.drain(..).map(|(_, l)| l).collect();
-            lines.push(detail(i, &m, Some(&pat)));
+            lines.push(detail(i, &m, &g.meta, Some(&pat)));
             log.push(Unit::new(Coord::leaf(i), Some((first, i + 1)), lines));
             after = g.context;
         } else if after > 0 {
             after -= 1;
-            log.extend(i, detail(i, &m, None));
+            log.extend(i, detail(i, &m, &g.meta, None));
         } else if g.context > 0 {
-            ring.push_back((i, detail(i, &m, None)));
+            ring.push_back((i, detail(i, &m, &g.meta, None)));
             if ring.len() as u64 > g.context {
                 ring.pop_front();
             }
@@ -319,7 +321,8 @@ pub fn grep(s: &Snapshot, out: &mut dyn Write, g: &Grep) -> Result<ExitCode> {
             if below(key(c)) && g.admits(&since, &n.ts, &n.origin, &n.who) && pat.is_match(&n.text)
             {
                 hits += 1;
-                page.push(Unit::new(c, None, vec![format!("{c}|{}", n.text)]));
+                let line = format!("{c}|{}{}", g.meta.head_at(s, c)?, n.text);
+                page.push(Unit::new(c, None, vec![line]));
             }
         }
         pages.push(page);

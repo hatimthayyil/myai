@@ -339,24 +339,22 @@ fn provenance_comes_from_the_cwd_and_env() {
         assert!(r.status.success(), "{}", text(&r.stderr));
         text(&r.stdout)
     };
-    let first = grep(&[]).lines().next().unwrap().to_string();
-    let (date, time) = (&a.ts[..8], &a.ts[9..13]);
+    let first = |args: &[&str]| grep(args).lines().next().unwrap().to_string();
+    let (ts, date) = (&a.ts, format!("{}-{}-{}", &a.ts[..4], &a.ts[4..6], &a.ts[6..8]));
+    assert_eq!(first(&[]), format!("0+1|{date}|noted inside a repo"));
     assert_eq!(
-        first,
+        first(&["--time", "-o", "origin,repo,kind"]),
         format!(
-            "0+1 {}-{}-{} {}:{} {} acme/widget note: noted inside a repo",
-            &date[..4],
-            &date[4..6],
-            &date[6..],
-            &time[..2],
-            &time[2..],
+            "0+1|{date} {}:{}|{}|acme/widget|note|noted inside a repo",
+            &ts[9..11],
+            &ts[11..13],
             a.origin
         )
     );
     let heads = |args: &[&str]| -> Vec<String> {
         grep(args)
             .lines()
-            .map(|l| l.split(' ').next().unwrap().to_string())
+            .map(|l| l.split(['|', ' ']).next().unwrap().to_string())
             .collect()
     };
     assert_eq!(heads(&["--repo", "acme/widget"]), ["0+1", "1"]);
@@ -572,7 +570,7 @@ fi
 echo '{"type":"system","subtype":"init","model":"claude-fake","mcp_servers":[{"name":"memory","status":"connected"}]}'
 echo '{"type":"user","isReplay":true}'
 echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__memory__zoom","input":{"id":0,"n":1}}]}}'
-echo '{"type":"user","message":{"content":[{"type":"tool_result","content":"0+0|note: the code word is papaya"}]}}'
+echo '{"type":"user","message":{"content":[{"type":"tool_result","content":"0+0|the code word is papaya"}]}}'
 echo '{"type":"assistant","message":{"content":[{"type":"text","text":"It is papaya."}]}}'
 echo '{"type":"result","result":"It is papaya.","usage":{"input_tokens":1,"cache_read_input_tokens":9,"cache_creation_input_tokens":2,"output_tokens":3}}'
 sleep 60
@@ -609,7 +607,7 @@ fn a_chat_turn_end_to_end_with_a_fake_claude() {
     let out = text(&r.stdout);
     assert!(r.status.success(), "{}", text(&r.stderr));
     assert!(
-        out.starts_with("<chat>\n0+1|note: the code word is papaya\n</chat>\n"),
+        out.starts_with("<chat>\n0+1|the code word is papaya\n</chat>\n"),
         "{out}"
     );
     assert!(out.contains("primed: 0 read · 9 write"), "{out}");
@@ -618,9 +616,9 @@ fn a_chat_turn_end_to_end_with_a_fake_claude() {
     assert_eq!(
         logged,
         [
-            "note: the code word is papaya",
+            "the code word is papaya",
             "user: what is the code word?",
-            "tool: mcp__memory__zoom {\"id\":0,\"n\":1}\n0+0|note: the code word is papaya",
+            "tool: mcp__memory__zoom {\"id\":0,\"n\":1}\n0+0|the code word is papaya",
             "ai: It is papaya.",
         ]
     );
@@ -700,7 +698,7 @@ fn a_chat_turn_end_to_end_with_a_fake_claude() {
     assert_eq!(replies[0]["result"]["serverInfo"]["name"], "memory");
     assert_eq!(said(1), "3+0|ai: It is papaya.");
     assert!(
-        said(2).starts_with("0+2|note: the code word is papaya user: what is"),
+        said(2).starts_with("0+2|the code word is papaya user: what is"),
         "{}",
         said(2)
     );

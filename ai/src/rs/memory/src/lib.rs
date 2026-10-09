@@ -6,6 +6,7 @@ mod config;
 mod cover;
 mod grep;
 mod log;
+mod meta;
 pub mod prov;
 mod record;
 mod store;
@@ -22,6 +23,7 @@ pub use compact::{
 };
 pub use config::{Config, Knob};
 pub use cover::cover;
+pub use meta::{Field, Meta};
 pub use record::{Kind, Message, Node, Place, Who, flat, now};
 pub use store::{Built, Changes, LOG, ME, REF, Snapshot, Store, fan_path, level_dir};
 pub use tree::{Coord, NODE};

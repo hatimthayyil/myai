@@ -20,6 +20,7 @@ use gix::{
 
 use crate::{
     config::{Config, SECTION, SUBSECTION},
+    meta::span,
     record::{Message, Node, Who, now},
     tree::{Coord, free, joined},
 };
@@ -278,7 +279,8 @@ impl Store {
     }
 
     /// Appends `items` in order, with every free node they complete; returns the first new id.
-    /// A message without an origin gets this store's; every other field is kept as given.
+    /// A message without an origin gets this store's, one without a ts the time it lands, never
+    /// before the last message's: the log is in time order. Every other field is kept as given.
     pub fn append(&self, msg: &str, items: &[Message]) -> Result<(u64, Built, Snapshot<'_>)> {
         let ((first, built), snap) = self.mutate(msg, |s| {
             let mut ed = Edit::new(s)?;
@@ -314,6 +316,7 @@ struct Edit<'a, 's> {
     ch: Changes,
     segs: BTreeMap<String, Vec<String>>,
     built: Built,
+    last: Option<String>,
 }
 
 impl<'a, 's> Edit<'a, 's> {
@@ -324,6 +327,7 @@ impl<'a, 's> Edit<'a, 's> {
             ch: Changes::default(),
             segs: BTreeMap::new(),
             built: Vec::new(),
+            last: None,
         })
     }
 
@@ -387,6 +391,22 @@ impl<'a, 's> Edit<'a, 's> {
         if m.origin.is_empty() {
             m.origin.clone_from(&self.snap.store.origin);
         }
+        let last = match self.last.take() {
+            Some(ts) => ts,
+            None if i == 0 => String::new(),
+            None => self.snap.message(i - 1)?.ts,
+        };
+        if m.ts.is_empty() {
+            m.ts = now().max(last);
+        } else if m.ts < last {
+            let at = |ts: &str| span(ts, ts, true);
+            bail!(
+                "A message of {} cannot follow one of {} (UTC): the log is in time order.",
+                at(&m.ts),
+                at(&last)
+            );
+        }
+        self.last = Some(m.ts.clone());
         self.ch.put(fan_path(LOG, i), m.encode());
         self.t += 1;
         match free(m.line()) {

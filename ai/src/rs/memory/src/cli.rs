@@ -18,7 +18,9 @@ use crate::{
     compact::{Compactor, GaveUp, Options},
     config::Knob,
     grep::{Grep, grep},
-    log, prov,
+    log,
+    meta::Meta,
+    prov,
     record::{Kind, Message, midnight},
     cover::cover,
     store::{AtPath, ME, Snapshot, Store, pretty},
@@ -60,18 +62,20 @@ Never edit or delete anything under `{data}`: the tool manages it.
 ### Reading it: the view, zoom, grep
 
 `wake` prints the view: the whole memory in a fixed number of one-line
-summaries, oldest first. Each line is `id+n|text`, the n messages from
-id on. A short message is its own line, word for word; the older the
-messages, the more a line covers. Items are tagged with their kind:
-note (what sessions like this one noted), or user and ai (a chat with
-the user).
+summaries, oldest first. Each line is `id+n|dates|text`: the n messages
+from id on, and the UTC days they span (`2026-10-04..10-05`). A short
+message is its own line, word for word; the older the messages, the
+more a line covers. Notes (what sessions like this one noted) are bare
+text; a chat with the user is tagged by speaker, `user:` and `ai:`.
 
 `{memo} zoom <id+n>` opens a line into the two lines of n/2 it was made
 from; `{memo} zoom <id>+1` gives message id in full. Zoom whenever a line
 only mentions something you need, before you act, guess or ask.
 `{memo} grep <regex>` searches every message, word for word; `-t` adds
-the summaries, `--help` lists the filters. `{memo} show <id+n>` prints
-where a message or summary came from.
+the summaries, `--help` lists the filters. `wake`, `zoom` and `grep`
+take `--time` for the time of day and `-o repo,branch,...` for more
+fields. `{memo} show <id+n>` prints where a message or summary came
+from.
 
 ### If you're a subagent: skip everything above
 
@@ -100,6 +104,8 @@ enum Command {
         part: Option<u64>,
         #[arg(help = "the commit a multi-part read is pinned to, as printed")]
         commit: Option<String>,
+        #[command(flatten)]
+        meta: Meta,
     },
     #[command(about = "record one memory: one short line.")]
     Note {
@@ -116,6 +122,8 @@ enum Command {
         id: String,
         #[arg(help = "the part of a long message to show, as printed")]
         part: Option<u64>,
+        #[command(flatten)]
+        meta: Meta,
     },
     #[command(about = "show where one message or summary came from.")]
     Show {
@@ -197,11 +205,15 @@ impl Cli {
         let s = Store::open(dir)?;
         match self.command {
             Command::Init => unreachable!(),
-            Command::Wake { part, commit } => wake(&s, out, part.unwrap_or(1), commit.as_deref()),
+            Command::Wake { part, commit, meta } => {
+                wake(&s, out, part.unwrap_or(1), commit.as_deref(), &meta)
+            }
             Command::Note { text } => note(&s, out, &text, rt),
             Command::Nap => nap(&s, out, rt),
             Command::Grep(g) => grep(&s.snapshot()?, out, &g),
-            Command::Zoom { id, part } => zoom_cmd(&s.snapshot()?, out, &id, part.unwrap_or(1)),
+            Command::Zoom { id, part, meta } => {
+                zoom_cmd(&s.snapshot()?, out, &id, part.unwrap_or(1), &meta)
+            }
             Command::Show { id } => show(&s.snapshot()?, out, &id),
             Command::Config { sets } => config(&s, out, &sets),
             Command::Import { file } => import(&s, out, &file),
@@ -297,7 +309,13 @@ fn init(dir: &Path, out: &mut dyn Write) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn wake(s: &Store, out: &mut dyn Write, k: u64, commit: Option<&str>) -> Result<ExitCode> {
+fn wake(
+    s: &Store,
+    out: &mut dyn Write,
+    k: u64,
+    commit: Option<&str>,
+    meta: &Meta,
+) -> Result<ExitCode> {
     let snap = match commit {
         Some(c) => s.at(Some(s.commit_id(c)?))?,
         None => s.snapshot()?,
@@ -313,7 +331,7 @@ fn wake(s: &Store, out: &mut dyn Write, k: u64, commit: Option<&str>) -> Result<
     };
     let mut lines = Vec::new();
     for c in cover(t, s.cfg.get(Knob::WakeLines)) {
-        wake_lines(&snap, c, &mut lines)?;
+        wake_lines(&snap, c, meta, &mut lines)?;
     }
     let parts = paginate(
         lines,
@@ -336,7 +354,12 @@ fn wake(s: &Store, out: &mut dyn Write, k: u64, commit: Option<&str>) -> Result<
     }
     writeln!(out, "{}", parts[k as usize - 1].join("\n"))?;
     if k < n {
-        writeln!(out, "Not awake yet. Run: {ME} wake {} {pin}", k + 1)?;
+        writeln!(
+            out,
+            "Not awake yet. Run: {ME} wake {} {pin}{}",
+            k + 1,
+            meta.flags()
+        )?;
     } else {
         writeln!(out, "You are awake.")?;
     }
@@ -344,17 +367,19 @@ fn wake(s: &Store, out: &mut dyn Write, k: u64, commit: Option<&str>) -> Result<
 }
 
 /// Line `c`, or its halves' lines while its summary is not built; tool calls have none.
-fn wake_lines(snap: &Snapshot, c: Coord, out: &mut Vec<String>) -> Result<()> {
-    match snap.node(c)? {
-        Some(n) if n.text.is_empty() => {}
-        Some(n) => out.push(format!("{c}|{}", n.text)),
-        None if c.l == 0 => out.push(format!("{c}|{PLACEHOLDER}")),
+fn wake_lines(snap: &Snapshot, c: Coord, meta: &Meta, out: &mut Vec<String>) -> Result<()> {
+    let text = match snap.node(c)? {
+        Some(n) if n.text.is_empty() => return Ok(()),
+        Some(n) => n.text,
+        None if c.l == 0 => PLACEHOLDER.into(),
         None => {
             for k in c.children() {
-                wake_lines(snap, k, out)?;
+                wake_lines(snap, k, meta, out)?;
             }
+            return Ok(());
         }
-    }
+    };
+    out.push(format!("{c}|{}{text}", meta.head_at(snap, c)?));
     Ok(())
 }
 
@@ -477,15 +502,26 @@ fn config(s: &Store, out: &mut dyn Write, sets: &[String]) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn zoom_cmd(s: &Snapshot, out: &mut dyn Write, id: &str, part: u64) -> Result<ExitCode> {
+fn zoom_cmd(
+    s: &Snapshot,
+    out: &mut dyn Write,
+    id: &str,
+    part: u64,
+    meta: &Meta,
+) -> Result<ExitCode> {
     let c = line_id(id, s.log_len()?)?;
-    let Some(text) = zoom(s, c.id(), c.n())? else {
+    let Some(text) = zoom(s, c.id(), c.n(), Some(meta))? else {
         bail!("No line {c}.");
     };
     let (text, n) = page(&text, s.cfg().get(Knob::PartChars), part)?;
     writeln!(out, "{}", text.strip_suffix('\n').unwrap_or(text))?;
     if part < n {
-        writeln!(out, "Part {part} of {n}. Next: {ME} zoom {c} {}", part + 1)?;
+        writeln!(
+            out,
+            "Part {part} of {n}. Next: {ME} zoom {c} {}{}",
+            part + 1,
+            meta.flags()
+        )?;
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -545,13 +581,7 @@ fn import(s: &Store, out: &mut dyn Write, file: &Path) -> Result<ExitCode> {
             pretty(file)
         );
     };
-    let snap = s.snapshot()?;
-    let n = snap.log_len()?;
-    let mut last = if n > 0 {
-        snap.message(n - 1)?.date()
-    } else {
-        "0000-00-00".into()
-    };
+    let mut last = String::new();
     let mut items = Vec::new();
     for (i, line) in (1..).zip(src.lines()) {
         if line.trim().is_empty() {
@@ -565,7 +595,7 @@ fn import(s: &Store, out: &mut dyn Write, file: &Path) -> Result<ExitCode> {
             bail!("line {i}: {date} is not a real date.");
         };
         if *date < *last {
-            bail!("line {i}: date {date} precedes the previous message ({last}).");
+            bail!("line {i}: date {date} precedes the previous line's ({last}).");
         }
         let text = text.trim();
         if text.is_empty() {

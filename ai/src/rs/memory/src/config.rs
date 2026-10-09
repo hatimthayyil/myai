@@ -6,8 +6,8 @@ use crate::tree::NODE;
 pub const SECTION: &str = "ai";
 pub const SUBSECTION: &str = "memory";
 
-/// The longest note: `note: ` and its text fit one node, so it is its own line of the view.
-pub const NOTE_MAX: u64 = (NODE - "note: ".len()) as u64;
+/// The longest note: one node, so it is its own line of the view.
+pub const NOTE_MAX: u64 = NODE as u64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Knob {

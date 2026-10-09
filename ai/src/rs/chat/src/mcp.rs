@@ -50,7 +50,7 @@ pub fn zoom_tool(s: &Snapshot, args: &Value) -> Result<String> {
     let (Some(id), Some(n)) = (int(args, "id"), int(args, "n")) else {
         return Ok(none);
     };
-    let Some(text) = zoom(s, id, n)? else {
+    let Some(text) = zoom(s, id, n, None)? else {
         return Ok(none);
     };
     let part = match args.get("part") {
