@@ -19,6 +19,7 @@ use crate::{
     config::Knob,
     cover::cover,
     grep::{Grep, grep},
+    hook::{REMINDED, hook},
     log,
     meta::Meta,
     prov,
@@ -141,6 +142,8 @@ enum Command {
     Import { file: PathBuf },
     #[command(about = "count how often agents wake, note, zoom, grep and show.")]
     Stats(Stats),
+    #[command(about = "the prompt hook for agent harnesses: a memory reminder on long prompts.")]
+    Hook,
 }
 
 impl Command {
@@ -175,11 +178,12 @@ impl Command {
             Command::Config { sets } => ("config", sets.clone()),
             Command::Import { file } => ("import", vec![file.display().to_string()]),
             Command::Stats(st) => ("stats", st.args()),
+            Command::Hook => ("hook", Vec::new()),
         }
     }
 }
 
-/// How commands reach the compactor's model; tests swap in their own.
+/// How commands reach the compactor's model and stdin; tests swap in their own.
 pub struct Runtime {
     pub backend: Box<dyn Fn() -> Result<Arc<dyn Backend>>>,
     pub opts: Options,
@@ -187,6 +191,7 @@ pub struct Runtime {
     pub nap_on_note: bool,
     /// Called by `nap` when a round is done, while it still holds the compactor lock.
     pub before_release: Box<dyn Fn()>,
+    pub stdin: Box<dyn Fn() -> io::Result<String>>,
 }
 
 impl Default for Runtime {
@@ -196,6 +201,7 @@ impl Default for Runtime {
             opts: Options::default(),
             nap_on_note: std::env::var_os("AI_MEMORY_NAP").is_none_or(|v| v != "0"),
             before_release: Box::new(|| {}),
+            stdin: Box::new(|| io::read_to_string(io::stdin())),
         }
     }
 }
@@ -247,16 +253,25 @@ impl Cli {
             .map(|cwd| prov::place(&cwd))
             .unwrap_or_default();
         let who = prov::env_who();
-        let (cmd, args) = self.command.typed();
+        let (cmd, mut args) = self.command.typed();
         let mut out = Tally::new(out);
-        let r = self.command.run(&s, &mut out, rt, &place, &who);
+        let quiet = matches!(self.command, Command::Hook);
+        let r = match self.command {
+            Command::Hook => hook(&mut out, (rt.stdin)()).map(|shown| {
+                if shown {
+                    args.push(REMINDED.into());
+                }
+                ExitCode::SUCCESS
+            }),
+            c => c.run(&s, &mut out, rt, &place, &who),
+        };
         let error = match &r {
             Ok(c) if *c == ExitCode::SUCCESS => None,
             Ok(_) => Some("exit 1".into()),
             Err(e) => Some(format!("{e:#}")),
         };
         let _ = usage::record(dir, &Use::new(cmd, args, &place, &who, &out, error));
-        r
+        if quiet { Ok(ExitCode::SUCCESS) } else { r }
     }
 }
 
@@ -270,7 +285,7 @@ impl Command {
         who: &Who,
     ) -> Result<ExitCode> {
         match self {
-            Command::Init => unreachable!(),
+            Command::Init | Command::Hook => unreachable!(),
             Command::Wake { part, commit, meta } => {
                 wake(s, out, part.unwrap_or(1), commit.as_deref(), &meta)
             }

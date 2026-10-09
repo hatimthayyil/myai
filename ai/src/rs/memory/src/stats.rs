@@ -6,6 +6,7 @@ use jiff::{ToSpan, civil::Date, tz::TimeZone};
 
 use crate::{
     cli::plural,
+    hook::REMINDED,
     meta::date,
     record::{Kind, midnight},
     store::Snapshot,
@@ -176,7 +177,12 @@ pub fn stats(s: &Snapshot, dir: &Path, out: &mut dyn Write, st: &Stats) -> Resul
         Ok(())
     })?;
     let mut failed = Counts::default();
+    let (mut hooked, mut reminded) = (0, 0);
     for u in usage::read(dir)?.into_iter().filter(|u| u.ts >= from) {
+        if u.cmd == "hook" && u.ok {
+            hooked += 1;
+            reminded += u64::from(u.args.iter().any(|a| a == REMINDED));
+        }
         let Some(i) = cmd(&u.cmd) else { continue };
         let Use {
             ts,
@@ -206,6 +212,13 @@ pub fn stats(s: &Snapshot, dir: &Path, out: &mut dyn Write, st: &Stats) -> Resul
     }
     table(out, st.by, &rows(&calls, |c| c.key(st.by)))?;
     sessions(out, &calls)?;
+    if hooked > 0 {
+        writeln!(
+            out,
+            "{} hooked, {reminded} reminded.",
+            plural(hooked, "prompt")
+        )?;
+    }
     let failed: Vec<String> = CMDS
         .iter()
         .zip(failed)

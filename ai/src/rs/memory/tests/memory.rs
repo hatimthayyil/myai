@@ -12,8 +12,9 @@ use std::{
 };
 
 use ai_memory::{
-    Backend, Block, Cli, Compactor, Conversation, Coord, Field, GaveUp, HIDDEN, Kind, Mem, Message,
-    Meta, NODE, Options, PLACEHOLDER, Place, Runtime, Store, VIEW, Who, zoom,
+    Backend, Block, Cli, Compactor, Conversation, Coord, Field, GaveUp, HIDDEN, Kind, LONG_PROMPT,
+    Mem, Message, Meta, NODE, Options, PLACEHOLDER, Place, REMINDER, Runtime, Store, VIEW, Who,
+    zoom,
 };
 use anyhow::{Result, bail};
 use clap::Parser;
@@ -32,6 +33,7 @@ fn runtime(backend: Arc<dyn Backend>) -> Runtime {
         opts: opts(VIEW, 8),
         nap_on_note: false,
         before_release: Box::new(|| {}),
+        stdin: Box::new(|| Ok(String::new())),
     }
 }
 
@@ -69,6 +71,15 @@ fn run(dir: &Path, args: &[&str]) -> Out {
         &runtime(Arc::new(Model(Arc::new(Fake::summaries())))),
         args,
     )
+}
+
+fn hook(dir: &Path, input: &str) -> Out {
+    let input = input.to_string();
+    let rt = Runtime {
+        stdin: Box::new(move || Ok(input.clone())),
+        ..runtime(Arc::new(Model(Arc::new(Fake::summaries()))))
+    };
+    run_rt(dir, &rt, &["hook"])
 }
 
 fn store() -> (TempDir, PathBuf) {
@@ -1147,6 +1158,10 @@ fn stats_count_notes_from_the_store_and_reads_from_the_usage_log() {
         call("20200301T092000Z", "zoom", true, a.0, a.1, "s1"),
         call("20200301T092100Z", "zoom", true, a.0, a.1, "s1"),
         call("20200301T092200Z", "grep", false, a.0, a.1, "s1"),
+        call("20200301T092300Z", "hook", true, a.0, a.1, "s1"),
+        call("20200301T092400Z", "hook", true, a.0, a.1, "s1")
+            .replace(r#""args":[]"#, r#""args":["reminded"]"#),
+        call("20200301T092500Z", "hook", false, a.0, a.1, "s1"),
         "torn".into(),
         call("20200302T095900Z", "wake", true, b.0, b.1, "s2"),
         call("20200302T100500Z", "show", true, b.0, b.1, "s2"),
@@ -1161,6 +1176,7 @@ fn stats_count_notes_from_the_store_and_reads_from_the_usage_log() {
          3 sessions, 3 woke.\n\
          Per woken session: 1.0 notes, 0.7 zooms, 0.0 greps, 0.3 shows.\n\
          Of these, 67% noted, 33% zoomed, 0% grepped, 33% showed.\n\
+         2 prompts hooked, 1 reminded.\n\
          Failed: 1 note, 1 grep.\n";
     let r = run(&d, &["stats", "--since", "2020-03-01"]);
     assert_eq!(
@@ -1203,4 +1219,75 @@ fn stats_count_notes_from_the_store_and_reads_from_the_usage_log() {
         "{}",
         r.stdout
     );
+}
+
+#[test]
+fn the_hook_reminds_on_long_prompts_only_and_never_fails() {
+    let (_tmp, d) = store();
+    let long = "é".repeat(LONG_PROMPT);
+    let short = &long[..long.len() - 2];
+    let input = |prompt: &str| {
+        serde_json::json!({
+            "session_id": "s",
+            "cwd": "/",
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": prompt,
+        })
+        .to_string()
+    };
+    let r = hook(&d, &input(short));
+    assert_eq!((r.code, r.stdout.as_str()), (0, ""), "{}", r.stderr);
+    let r = hook(&d, &input(&long));
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert_eq!(
+        r.stdout,
+        "{\"hookSpecificOutput\":{\"additionalContext\":\"Memory: zoom/grep to recall, note to remember.\",\"hookEventName\":\"UserPromptSubmit\"}}\n"
+    );
+    assert_eq!(REMINDER, "Memory: zoom/grep to recall, note to remember.");
+    let r = hook(&d, &serde_json::json!({ "prompt": long }).to_string());
+    assert_eq!(r.code, 0);
+    assert!(r.stdout.contains(REMINDER), "{}", r.stdout);
+    for bad in ["", "not json", r#"{"session_id":"s"}"#, r#"{"prompt":7}"#] {
+        let r = hook(&d, bad);
+        assert_eq!(
+            (r.code, r.stdout.as_str(), r.stderr.as_str()),
+            (0, "", ""),
+            "{bad}"
+        );
+    }
+    let log: Vec<serde_json::Value> = fs::read_to_string(d.join("usage.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let seen: Vec<_> = log
+        .iter()
+        .map(|u| {
+            (
+                u["cmd"].as_str().unwrap(),
+                u["args"].clone(),
+                u["ok"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    let hook = |args: serde_json::Value, ok| ("hook", args, ok);
+    assert_eq!(
+        seen,
+        [
+            hook(serde_json::json!([]), true),
+            hook(serde_json::json!(["reminded"]), true),
+            hook(serde_json::json!(["reminded"]), true),
+            hook(serde_json::json!([]), false),
+            hook(serde_json::json!([]), false),
+            hook(serde_json::json!([]), false),
+            hook(serde_json::json!([]), false),
+        ]
+    );
+    assert_eq!(
+        log[3]["error"],
+        "Not a hook input with a prompt.: EOF while parsing a value at line 1 column 0"
+    );
+    assert_eq!(log[1]["lines"], 1);
+    let r = run(&d, &["stats"]);
+    assert!(r.stdout.ends_with("No calls.\n"), "{}", r.stdout);
 }
