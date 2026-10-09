@@ -1,0 +1,77 @@
+ai/src/rs/memory/src/stats.rs
+  s_32552ebd17482d::t_a1d9e3b50fce6c 137,147-148,151
+  s_32552ebd17482d::t_2edb1910736441 1-8,10-26,38-45,52-61,63-79,81-90,92-105,111,113-115,117-128,130-136,138-146,149-150,152-219
+  s_32552ebd17482d::t_9925fae25361ed 27-37,62,106,116
+  s_32552ebd17482d::t_fe51393bbadf29 46-51
+  s_32552ebd17482d::t_94e4fde1cdf26e 107-110,112
+  s_32552ebd17482d::t_548d95447654ed 9,80,91,129
+ai/src/rs/memory/src/cli.rs
+  s_32552ebd17482d::t_64b2750e7e4578 25-26,29,142-151,157,163-168,173-179,246-272,275,277-278,284-286,453-460,463-464
+  s_32552ebd17482d::t_94e4fde1cdf26e 20,152-156,158-162,169-172
+ai/src/rs/memory/tests/memory.rs
+  s_32552ebd17482d::t_fe51393bbadf29 1192-1193,1200-1202
+  s_32552ebd17482d::t_f15d34ec787fac 1100-1181,1187-1191,1194-1199,1203-1206
+  s_32552ebd17482d::t_f0a7c6e54d02f4 1182-1186
+ai/src/rs/memory/src/grep.rs
+  s_32552ebd17482d::t_94e4fde1cdf26e 183-188
+  s_32552ebd17482d::t_6620d2c441dc68 173-175,181,201,204-220
+ai/comments/ai/src/rs/memory/Cargo.toml.md
+  s_32552ebd17482d::t_6f248e8f797290 10
+ai/src/rs/memory/src/lib.rs
+  s_32552ebd17482d::t_64b2750e7e4578 12,15
+tests/cli.rs
+  s_32552ebd17482d::t_9e27cd6c0862a1 554-555
+  s_32552ebd17482d::t_1a27b83f4b0dd6 585
+  s_32552ebd17482d::t_37392a5114d9cd 462-463,468-553,556-584,586-612
+  s_32552ebd17482d::t_f457439545b91f 613
+ai/comments/ai/src/rs/memory/src/cli.rs.md
+  s_32552ebd17482d::t_6f248e8f797290 16-17
+ai/comments/ai/src/rs/memory/src/stats.rs.md
+  s_32552ebd17482d::t_6f248e8f797290 1-9
+ai/comments/tests/cli.rs.md
+  s_32552ebd17482d::t_6f248e8f797290 14-15
+ai/src/rs/memory/src/usage.rs
+  s_32552ebd17482d::t_652603856ff102 1-113
+ai/src/rs/memory/Cargo.toml
+  s_32552ebd17482d::t_bbe80a21617ebe 16
+  s_32552ebd17482d::t_fdffe89d524b4f 3
+ai/comments/ai/src/rs/memory/src/meta.rs.md
+  s_32552ebd17482d::t_6f248e8f797290 10-11
+ai/comments/ai/src/rs/memory/tests/memory.rs.md
+  s_32552ebd17482d::t_6f248e8f797290 15
+ai/research/20261009T192842---ai-memory-usage.md
+  s_32552ebd17482d::t_7b1eb2792a6346 1-71
+ai/comments/ai/src/rs/memory/src/usage.rs.md
+  s_32552ebd17482d::t_6f248e8f797290 1-10
+ai/comments/ai/src/rs/memory/src/grep.rs.md
+  s_32552ebd17482d::t_6f248e8f797290 6
+ai/backlog.md
+  s_32552ebd17482d::t_70b7061565a29a 21
+ai/src/rs/memory/src/meta.rs
+  s_32552ebd17482d::t_548d95447654ed 64
+  s_32552ebd17482d::t_6620d2c441dc68 139-140,142,146,148-153
+Cargo.lock
+  s_32552ebd17482d::t_07d7cf24309aec 22,30,49,60,1745
+Cargo.toml
+  s_32552ebd17482d::t_361de27c9e65ef 3
+ai/src/rs/ai/Cargo.toml
+  s_32552ebd17482d::t_d3a77c838d6f72 3
+ai/src/rs/chat/Cargo.toml
+  s_32552ebd17482d::t_65e21e9434d6e2 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ca83a5b9a50839034c5c0ded78f7cfd58670baec",
+  "prompts": {},
+  "sessions": {
+    "s_32552ebd17482d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a87491ed-08a1-4f25-a17f-a6bc58caa31a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Hatim Thayyil <hatim@thayyil.net>"
+    }
+  }
+}
