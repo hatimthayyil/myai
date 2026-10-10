@@ -14,8 +14,9 @@ the more a line covers. A message not summarized yet
 shows as "(not summarized yet: zoom it)". No message appears in full,
 not even the last ones.
 
-Navigating: zoom(id, n) opens line id+n into the two lines of n/2
-messages it was made from; zoom(id, 1) gives message id in full. Zoom
+Navigating: zoom(id, n) opens line id+n two levels down, into the four
+lines of n/4 messages it was made from (its messages when n is 2 or 4);
+zoom(id, 1) gives message id in full. Zoom
 whenever a summary only mentions something you need, such as what your
 last reply said, a decision, a past attempt or where a file is, before
 you act, guess or ask. date(id) gives the date and time of message id.

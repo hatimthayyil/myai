@@ -11,7 +11,7 @@ or compress one long note into a line.
 Agents read the memory only through these lines: recent notes one per
 line, older ones more per line, the older the more. So your line stands
 in for its notes for months or years, and is later merged with its
-neighbor into the line above. An agent can zoom a line back into the two
+neighbor into the line above. An agent can zoom a line back into the
 lines it was made from, but it decides to zoom from your words alone:
 what your line does not name is lost to every line above. So name every
 item with the words an agent would look for: project, repo, file,

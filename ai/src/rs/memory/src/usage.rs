@@ -1,6 +1,6 @@
 use std::{
-    fs::OpenOptions,
-    io::{self, Write},
+    fs::{File, OpenOptions},
+    io::{self, Read, Seek, SeekFrom, Write},
     path::Path,
 };
 
@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::record::{Place, Who, now};
 
 pub const USAGE_LOG: &str = "usage.jsonl";
+const TAIL: u64 = 1 << 20;
 
 /// One command run against the memory: what, how it went, by whom and from where.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,6 +80,31 @@ pub fn read(dir: &Path) -> io::Result<Vec<Use>> {
     Ok(text
         .lines()
         .filter_map(|l| serde_json::from_str(l).ok())
+        .collect())
+}
+
+/// The last `n` lines that `keep` accepts within the usage log's last `TAIL` bytes in `dir`,
+/// newest first; none if it is absent.
+pub fn last(dir: &Path, n: usize, keep: impl Fn(&Use) -> bool) -> io::Result<Vec<Use>> {
+    let mut f = match File::open(dir.join(USAGE_LOG)) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        r => r?,
+    };
+    let len = f.metadata()?.len();
+    let start = len.saturating_sub(TAIL);
+    f.seek(SeekFrom::Start(start))?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf)?;
+    let whole = if start == 0 {
+        &buf[..]
+    } else {
+        memchr::memchr(b'\n', &buf).map_or(&[][..], |i| &buf[i + 1..])
+    };
+    Ok(whole
+        .rsplit(|&b| b == b'\n')
+        .filter_map(|l| serde_json::from_slice(l).ok())
+        .filter(keep)
+        .take(n)
         .collect())
 }
 

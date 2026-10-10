@@ -6,5 +6,6 @@
 - Not tracing: this is data to count, not diagnostics. A tracing layer would tie it to `AI_MEMORY_LOG` filtering, need the `json` feature, and nest fields under `fields`.
 - Parallel appends: the line is serialised first, then written by one `write_all` on an `O_APPEND` file. Linux appends whole writes to a regular file atomically (the inode lock is held per write), so lines never interleave; `parallel_reads_log_whole_lines` uses 10 kB lines from 16 processes. No lock file.
 - Never fails a command: `record` errors are dropped by the caller. `read` skips lines that do not parse (a torn line from a crash, a hand edit).
-- No rotation: about 300 bytes per call, a few hundred calls a day.
+- No rotation: about 300 bytes per call, a few hundred calls a day. The hook reads only the tail (`last`), so growth does not slow prompts; `stats` reads it all.
 - A note's text is not logged: the store has it. A refused note (too long, several lines) is logged with its error, which the store never sees.
+- `last`: the hook's reader (hook.rs.md). Reads one bounded tail (`TAIL` = 1 MiB), not the whole log, so a hook stays fast as the log grows; the partial first line of the tail is dropped; lines are parsed newest first and parsing stops once enough match.

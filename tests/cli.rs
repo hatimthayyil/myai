@@ -844,10 +844,9 @@ fn a_chat_turn_end_to_end_with_a_fake_claude() {
     };
     assert_eq!(replies[0]["result"]["serverInfo"]["name"], "memory");
     assert_eq!(said(1), "3+0|ai: It is papaya.");
-    assert!(
-        said(2).starts_with("0+2|the code word is papaya user: what is"),
-        "{}",
-        said(2)
+    assert_eq!(
+        said(2),
+        "0+1|the code word is papaya\n1+1|user: what is the code word?\n2+1|(tool calls: zoom it)\n3+1|ai: It is papaya."
     );
     assert_eq!(said(3), "No message 9.");
 }

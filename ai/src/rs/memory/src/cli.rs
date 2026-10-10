@@ -71,8 +71,9 @@ message is its own line, word for word; the older the messages, the
 more a line covers. Notes (what sessions like this one noted) are bare
 text; a chat with the user is tagged by speaker, `user:` and `ai:`.
 
-`{memo} zoom <id+n>` opens a line into the two lines of n/2 it was made
-from; `{memo} zoom <id>+1` gives message id in full. Zoom whenever a line
+`{memo} zoom <id+n>` opens a line two levels down: the four lines of n/4
+it was made from, or its messages when n is 2 or 4; `{memo} zoom <id>+1`
+gives message id in full. Zoom whenever a line
 only mentions something you need, before you act, guess or ask.
 `{memo} grep <regex>` searches every message, word for word; `-t` adds
 the summaries, `--help` lists the filters. `wake`, `zoom` and `grep`
@@ -119,7 +120,7 @@ enum Command {
     Nap,
     #[command(about = "search every message ever recorded, newest page first.")]
     Grep(Grep),
-    #[command(about = "open a line of the view into the two lines under it.")]
+    #[command(about = "open a line of the view into the four lines two levels under it.")]
     Zoom {
         #[arg(help = "a line's id+n, as printed: 2184+8, or 7+1 for message 7")]
         id: String,
@@ -142,7 +143,7 @@ enum Command {
     Import { file: PathBuf },
     #[command(about = "count how often agents wake, note, zoom, grep and show.")]
     Stats(Stats),
-    #[command(about = "the prompt hook for agent harnesses: a memory reminder on long prompts.")]
+    #[command(about = "the prompt hook for agent harnesses: a memory reminder on long prompts and every few short ones.")]
     Hook,
 }
 
@@ -252,15 +253,13 @@ impl Cli {
         let place = std::env::current_dir()
             .map(|cwd| prov::place(&cwd))
             .unwrap_or_default();
-        let who = prov::env_who();
+        let mut who = prov::env_who();
         let (cmd, mut args) = self.command.typed();
         let mut out = Tally::new(out);
         let quiet = matches!(self.command, Command::Hook);
         let r = match self.command {
-            Command::Hook => hook(&mut out, (rt.stdin)()).map(|shown| {
-                if shown {
-                    args.push(REMINDED.into());
-                }
+            Command::Hook => hook(&mut out, (rt.stdin)(), dir, &mut who).map(|rule| {
+                args.extend(rule.into_iter().flat_map(|r| [REMINDED.into(), r.into()]));
                 ExitCode::SUCCESS
             }),
             c => c.run(&s, &mut out, rt, &place, &who),

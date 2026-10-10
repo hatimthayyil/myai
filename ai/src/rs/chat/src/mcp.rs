@@ -13,7 +13,7 @@ fn tools() -> Value {
     json!([
         {
             "name": "zoom",
-            "description": "Open the line id+n of the view into the two lines of n/2 under it; n = 1 gives the message whole.",
+            "description": "Open the line id+n of the view two levels down, into the four lines of n/4 under it (its messages when n is 2 or 4); n = 1 gives the message whole.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

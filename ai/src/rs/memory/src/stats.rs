@@ -6,7 +6,7 @@ use jiff::{ToSpan, civil::Date, tz::TimeZone};
 
 use crate::{
     cli::plural,
-    hook::REMINDED,
+    hook::{PERIODIC, REMINDED},
     meta::date,
     record::{Kind, midnight},
     store::Snapshot,
@@ -177,11 +177,13 @@ pub fn stats(s: &Snapshot, dir: &Path, out: &mut dyn Write, st: &Stats) -> Resul
         Ok(())
     })?;
     let mut failed = Counts::default();
-    let (mut hooked, mut reminded) = (0, 0);
+    let (mut hooked, mut reminded, mut periodic) = (0, 0, 0);
     for u in usage::read(dir)?.into_iter().filter(|u| u.ts >= from) {
         if u.cmd == "hook" && u.ok {
+            let has = |a: &str| u64::from(u.args.iter().any(|x| x == a));
             hooked += 1;
-            reminded += u64::from(u.args.iter().any(|a| a == REMINDED));
+            reminded += has(REMINDED);
+            periodic += has(PERIODIC);
         }
         let Some(i) = cmd(&u.cmd) else { continue };
         let Use {
@@ -215,7 +217,7 @@ pub fn stats(s: &Snapshot, dir: &Path, out: &mut dyn Write, st: &Stats) -> Resul
     if hooked > 0 {
         writeln!(
             out,
-            "{} hooked, {reminded} reminded.",
+            "{} hooked, {reminded} reminded ({periodic} periodic).",
             plural(hooked, "prompt")
         )?;
     }

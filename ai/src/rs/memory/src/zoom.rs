@@ -2,8 +2,9 @@ use anyhow::{Result, bail};
 
 use crate::{meta::Meta, store::Snapshot, tree::Coord, view::HIDDEN};
 
-/// Line `id+n` opened: the two lines of `n/2` under it, or for `n = 1` the message whole,
-/// each with `meta`'s head if given. `None` when `id+n` is not a built line.
+/// Line `id+n` opened two levels down: the four lines of `n/4` under it, its messages' lines
+/// for `n` of 2 or 4, or for `n = 1` the message whole, each with `meta`'s head if given.
+/// `None` when `id+n` is not a built line.
 pub fn zoom(s: &Snapshot, id: u64, n: u64, meta: Option<&Meta>) -> Result<Option<String>> {
     let Some(c) = Coord::at(id, n, s.log_len()?) else {
         return Ok(None);
@@ -17,8 +18,9 @@ pub fn zoom(s: &Snapshot, id: u64, n: u64, meta: Option<&Meta>) -> Result<Option
     if s.node(c)?.is_none() {
         return Ok(None);
     }
+    let l = c.l.saturating_sub(2);
     let mut lines = Vec::new();
-    for k in c.children() {
+    for k in (c.id() >> l..c.end() >> l).map(|i| Coord::new(l, i)) {
         let Some(node) = s.node(k)? else {
             return Ok(None);
         };

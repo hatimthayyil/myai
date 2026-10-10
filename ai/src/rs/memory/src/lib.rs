@@ -26,7 +26,7 @@ pub use compact::{
 };
 pub use config::{Config, Knob};
 pub use cover::cover;
-pub use hook::{LONG_PROMPT, REMINDER};
+pub use hook::{LONG_PROMPT, REMIND_EVERY, REMINDER};
 pub use meta::{Field, Meta};
 pub use record::{Kind, Message, Node, Place, Who, flat, now};
 pub use store::{Built, Changes, LOG, ME, REF, Snapshot, Store, fan_path, level_dir};

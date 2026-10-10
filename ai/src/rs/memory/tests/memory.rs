@@ -13,8 +13,8 @@ use std::{
 
 use ai_memory::{
     Backend, Block, Cli, Compactor, Conversation, Coord, Field, GaveUp, HIDDEN, Kind, LONG_PROMPT,
-    Mem, Message, Meta, NODE, Options, PLACEHOLDER, Place, REMINDER, Runtime, Store, VIEW, Who,
-    zoom,
+    Mem, Message, Meta, NODE, Options, PLACEHOLDER, Place, REMIND_EVERY, REMINDER, Runtime, Store,
+    VIEW, Who, zoom,
 };
 use anyhow::{Result, bail};
 use clap::Parser;
@@ -383,6 +383,11 @@ fn short_messages_are_their_own_nodes() {
     assert_eq!(built.len(), 1);
     let (again, _) = s.put_node(Coord::new(2, 0), &fake_who(), "other").unwrap();
     assert!(again.is_empty(), "built nodes never change");
+    assert_eq!(
+        zoom(&s.snapshot().unwrap(), 0, 4, None).unwrap().unwrap(),
+        format!("0+1|user: hi there\n1+1|ai: hello\n2+1|{HIDDEN}\n3+1|{line}"),
+        "a line over a free half and a merged half opens into all four messages"
+    );
     assert!(s.put_node(Coord::new(3, 0), &fake_who(), "x").is_err());
     let m = Mem::load(&s.snapshot().unwrap(), VIEW).unwrap();
     assert_eq!(m.t(), 4);
@@ -392,31 +397,60 @@ fn short_messages_are_their_own_nodes() {
 }
 
 #[test]
-fn zoom_opens_one_level() {
+fn zoom_opens_two_levels() {
     let (_tmp, d) = store();
     let s = Store::open(&d).unwrap();
-    let items: Vec<_> = (0..5)
-        .map(|i| msg(Kind::User, format!("word {i}\nmore")))
+    let items: Vec<_> = (0..16)
+        .map(|i| msg(Kind::User, format!("w{i}\nm")))
         .collect();
     s.append("t", &items).unwrap();
-    s.append("t", &[msg(Kind::Ai, long(5))]).unwrap();
+    s.append("t", &[msg(Kind::Ai, long(16))]).unwrap();
     let snap = s.snapshot().unwrap();
     let z = |id, n| zoom(&snap, id, n, None).unwrap();
-    assert_eq!(z(1, 1).unwrap(), "1+0|user: word 1\nmore");
-    assert_eq!(z(5, 1).unwrap(), format!("5+0|ai: {}", long(5)));
+    let pair = |i: u64| format!("user: w{i} m user: w{} m", i + 1);
+    let four = |i: u64| format!("{} {}", pair(i), pair(i + 2));
+    assert_eq!(z(1, 1).unwrap(), "1+0|user: w1\nm");
+    assert_eq!(z(16, 1).unwrap(), format!("16+0|ai: {}", long(16)));
     assert_eq!(
-        z(0, 4).unwrap(),
-        "0+2|user: word 0 more user: word 1 more\n2+2|user: word 2 more user: word 3 more"
+        z(0, 16).unwrap(),
+        format!(
+            "0+4|{}\n4+4|{}\n8+4|{}\n12+4|{}",
+            four(0),
+            four(4),
+            four(8),
+            four(12)
+        ),
+        "a deep line opens into its four grandchildren"
+    );
+    assert_eq!(
+        z(8, 8).unwrap(),
+        format!(
+            "8+2|{}\n10+2|{}\n12+2|{}\n14+2|{}",
+            pair(8),
+            pair(10),
+            pair(12),
+            pair(14)
+        )
+    );
+    assert_eq!(
+        z(4, 4).unwrap(),
+        "4+1|user: w4 m\n5+1|user: w5 m\n6+1|user: w6 m\n7+1|user: w7 m",
+        "+4 opens into its messages"
     );
     assert_eq!(
         z(0, 2).unwrap(),
-        "0+1|user: word 0 more\n1+1|user: word 1 more"
+        "0+1|user: w0 m\n1+1|user: w1 m",
+        "+2 opens into its two messages"
     );
-    assert_eq!(z(4, 2), None, "4+2 is not built: message 5 has no line yet");
+    assert_eq!(
+        z(16, 2),
+        None,
+        "16+2 is not built: message 17 has no line yet"
+    );
     assert_eq!(z(3, 2), None);
-    assert_eq!(z(0, 8), None);
-    assert_eq!(z(6, 1), None);
-    assert_eq!(z(0, 3), None);
+    assert_eq!(z(0, 32), None);
+    assert_eq!(z(17, 1), None);
+    assert_eq!(z(0, 3), None, "+3 is not a line");
     let meta = Meta {
         time: false,
         fields: vec![Field::Kind, Field::Agent],
@@ -425,11 +459,11 @@ fn zoom_opens_one_level() {
     let day = format!("{}-{}-{}", &ts[..4], &ts[4..6], &ts[6..8]);
     assert_eq!(
         zoom(&snap, 0, 2, Some(&meta)).unwrap().unwrap(),
-        format!("0+1|{day}|user|-|user: word 0 more\n1+1|{day}|user|-|user: word 1 more")
+        format!("0+1|{day}|user|-|user: w0 m\n1+1|{day}|user|-|user: w1 m")
     );
     assert_eq!(
-        zoom(&snap, 5, 1, Some(&Meta::default())).unwrap().unwrap(),
-        format!("5+0|{day}|ai: {}", long(5))
+        zoom(&snap, 16, 1, Some(&Meta::default())).unwrap().unwrap(),
+        format!("16+0|{day}|ai: {}", long(16))
     );
 }
 
@@ -768,16 +802,20 @@ fn a_life_through_the_cli() {
     assert_eq!(run(d, &["config", "PART_CHARS="]).code, 0);
 
     let z = run(d, &["zoom", "0+32"]).stdout;
-    assert_eq!(z.lines().count(), 2);
-    assert!(z.starts_with("0+16|2020-01-01..01-08|") && z.contains("\n16+16|2020-01-09..01-16|"));
+    assert_eq!(z.lines().count(), 4, "{z}");
+    assert!(
+        z.starts_with("0+8|2020-01-01..01-04|") && z.contains("\n24+8|2020-01-13..01-16|"),
+        "{z}"
+    );
     assert!(
         run(d, &["zoom", "3"])
             .stdout
             .starts_with("3+0|2020-01-02|message 3 n")
     );
     let z = run(d, &["zoom", "32+8", "-o", "repo"]).stdout;
-    assert!(z.starts_with("32+4|2020-01-17..01-18|-|"), "{z}");
-    assert!(z.contains("\n36+4|2020-01-19..01-20|-|"), "{z}");
+    assert_eq!(z.lines().count(), 4, "{z}");
+    assert!(z.starts_with("32+2|2020-01-17|-|"), "{z}");
+    assert!(z.contains("\n38+2|2020-01-20|-|"), "{z}");
     assert_eq!(run(d, &["zoom", "0+64"]).stderr, "No line 0+64.");
     assert_eq!(run(d, &["zoom", "1+2"]).stderr, "No line 1+2.");
     assert!(run(d, &["zoom", "x"]).stderr.contains("not an id+n"));
@@ -1160,7 +1198,7 @@ fn stats_count_notes_from_the_store_and_reads_from_the_usage_log() {
         call("20200301T092200Z", "grep", false, a.0, a.1, "s1"),
         call("20200301T092300Z", "hook", true, a.0, a.1, "s1"),
         call("20200301T092400Z", "hook", true, a.0, a.1, "s1")
-            .replace(r#""args":[]"#, r#""args":["reminded"]"#),
+            .replace(r#""args":[]"#, r#""args":["reminded","periodic"]"#),
         call("20200301T092500Z", "hook", false, a.0, a.1, "s1"),
         "torn".into(),
         call("20200302T095900Z", "wake", true, b.0, b.1, "s2"),
@@ -1176,7 +1214,7 @@ fn stats_count_notes_from_the_store_and_reads_from_the_usage_log() {
          3 sessions, 3 woke.\n\
          Per woken session: 1.0 notes, 0.7 zooms, 0.0 greps, 0.3 shows.\n\
          Of these, 67% noted, 33% zoomed, 0% grepped, 33% showed.\n\
-         2 prompts hooked, 1 reminded.\n\
+         2 prompts hooked, 1 reminded (1 periodic).\n\
          Failed: 1 note, 1 grep.\n";
     let r = run(&d, &["stats", "--since", "2020-03-01"]);
     assert_eq!(
@@ -1275,8 +1313,8 @@ fn the_hook_reminds_on_long_prompts_only_and_never_fails() {
         seen,
         [
             hook(serde_json::json!([]), true),
-            hook(serde_json::json!(["reminded"]), true),
-            hook(serde_json::json!(["reminded"]), true),
+            hook(serde_json::json!(["reminded", "long"]), true),
+            hook(serde_json::json!(["reminded", "long"]), true),
             hook(serde_json::json!([]), false),
             hook(serde_json::json!([]), false),
             hook(serde_json::json!([]), false),
@@ -1290,4 +1328,46 @@ fn the_hook_reminds_on_long_prompts_only_and_never_fails() {
     assert_eq!(log[1]["lines"], 1);
     let r = run(&d, &["stats"]);
     assert!(r.stdout.ends_with("No calls.\n"), "{}", r.stdout);
+}
+
+#[test]
+fn the_hook_reminds_every_few_short_prompts_per_session() {
+    let (_tmp, d) = store();
+    let say = |d: &Path, session: &str, prompt: &str| {
+        let r = hook(
+            d,
+            &serde_json::json!({ "session_id": session, "prompt": prompt }).to_string(),
+        );
+        assert_eq!(r.code, 0, "{}", r.stderr);
+        r.stdout.contains(REMINDER)
+    };
+    let long = "x".repeat(LONG_PROMPT);
+    let shorts = |d: &Path, session: &str, n: usize| -> Vec<bool> {
+        (0..n).map(|_| say(d, session, "hi")).collect()
+    };
+    let every = REMIND_EVERY;
+    let mut due = vec![false; every - 1];
+    due.push(true);
+    assert_eq!(shorts(&d, "a", every), due);
+    assert_eq!(shorts(&d, "a", every), due);
+    assert!(say(&d, "a", &long));
+    assert_eq!(shorts(&d, "b", 2), [false, false]);
+    assert_eq!(shorts(&d, "a", every), due);
+    assert_eq!(shorts(&d, "b", every - 2), due[2..]);
+    let args: Vec<serde_json::Value> = fs::read_to_string(d.join("usage.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()["args"].clone())
+        .filter(|a| a.as_array().is_some_and(|a| !a.is_empty()))
+        .collect();
+    let (p, l) = (
+        serde_json::json!(["reminded", "periodic"]),
+        serde_json::json!(["reminded", "long"]),
+    );
+    assert_eq!(args, [p.clone(), p.clone(), l, p.clone(), p]);
+
+    let (_tmp, d) = store();
+    fs::create_dir(d.join("usage.jsonl")).unwrap();
+    assert_eq!(shorts(&d, "a", 2 * every), vec![false; 2 * every]);
+    assert!(say(&d, "a", &long));
 }
